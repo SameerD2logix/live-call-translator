@@ -1,0 +1,71 @@
+@import "tailwindcss";
+
+/*
+ * Palette from Multani blue pottery: cobalt and turquoise glazes on a cool white body.
+ * Calm enough to sit beside a video call; dark mode follows the system setting.
+ */
+:root {
+  --bg: #f3f6fa;
+  --surface: #ffffff;
+  --ink: #142142;
+  --muted: #56617d;
+  --line: #d7deea;
+  --cobalt: #1f3f94;
+  --cobalt-ink: #ffffff;
+  --turquoise: #1c8c8f;
+  --saffron: #a86a12;
+  --danger: #b3261e;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0c1324;
+    --surface: #131c33;
+    --ink: #e7ecf6;
+    --muted: #9aa5c0;
+    --line: #26314c;
+    --cobalt: #8ea8ff;
+    --cobalt-ink: #0c1324;
+    --turquoise: #4fc6c4;
+    --saffron: #e2a64b;
+    --danger: #f2827a;
+    color-scheme: dark;
+  }
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-line: var(--line);
+  --color-cobalt: var(--cobalt);
+  --color-cobalt-ink: var(--cobalt-ink);
+  --color-turquoise: var(--turquoise);
+  --color-saffron: var(--saffron);
+  --color-danger: var(--danger);
+  --font-sans: var(--font-atkinson), ui-sans-serif, system-ui, sans-serif;
+  --font-urdu: var(--font-nastaliq), "Noto Nastaliq Urdu", "Jameel Noori Nastaleeq", serif;
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+}
+
+:focus-visible {
+  outline: 3px solid var(--turquoise);
+  outline-offset: 3px;
+}
+
+/* Voice level ring around the Start/Stop button (--level is 0..1, set from JS). */
+.level-ring {
+  box-shadow: 0 0 0 calc(var(--level, 0) * 22px) color-mix(in oklab, var(--turquoise) 35%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .level-ring {
+    box-shadow: 0 0 0 6px color-mix(in oklab, var(--turquoise) calc(var(--level, 0) * 100%), transparent);
+  }
+}
