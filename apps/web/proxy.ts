@@ -5,7 +5,19 @@
  * Next.js reads the nonce from the request's CSP header and adds it to its own inline scripts,
  * so no other inline script can run, which blunts XSS.
  */
+import { getSessionCookie } from "better-auth/cookies";
 import { NextResponse, type NextRequest } from "next/server";
+
+/** Pages anyone may open. Everything else needs a session; API routes answer 401 themselves. */
+const PUBLIC_PAGES = ["/sign-in", "/sign-up", "/two-factor", "/forgot-password", "/reset-password"];
+
+function needsSignIn(request: NextRequest): boolean {
+  const { pathname } = request.nextUrl;
+  if (pathname.startsWith("/api/")) return false;
+  if (PUBLIC_PAGES.some((page) => pathname === page || pathname.startsWith(`${page}/`))) return false;
+  // Cookie PRESENCE only: a fast first filter. The page itself validates the session.
+  return !getSessionCookie(request);
+}
 
 function originOf(url: string | undefined): string | null {
   if (!url) return null;
@@ -17,6 +29,12 @@ function originOf(url: string | undefined): string | null {
 }
 
 export function proxy(request: NextRequest) {
+  if (needsSignIn(request)) {
+    const signIn = new URL("/sign-in", request.url);
+    signIn.searchParams.set("next", request.nextUrl.pathname);
+    return NextResponse.redirect(signIn);
+  }
+
   const nonce = btoa(crypto.randomUUID());
   const isDev = process.env.NODE_ENV !== "production";
   const gateway = originOf(process.env.GATEWAY_PUBLIC_URL);

@@ -12,6 +12,12 @@ export default tseslint.config(
     },
   },
   {
+    // Node scripts (database migrations).
+    files: ["apps/web/scripts/**/*.mjs"],
+    languageOptions: { globals: { process: "readonly", console: "readonly", URL: "readonly" } },
+    rules: { "no-console": "off" },
+  },
+  {
     // The AudioWorklet runs in its own global scope.
     files: ["apps/web/public/worklets/**/*.js"],
     languageOptions: {

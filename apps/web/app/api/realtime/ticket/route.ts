@@ -2,6 +2,10 @@
  * POST /api/realtime/ticket
  * Mints a 60-second, single-use ticket the browser uses to open the gateway WebSocket.
  * The signing secret stays on the server; the browser only ever sees the signed ticket.
+ *
+ * Phase 2: requires a real, verified session, and puts the user's OWN voice id (looked up
+ * in our database) into the signed ticket. The browser can't alter it, so nobody can call
+ * with another person's voice.
  */
 import { randomUUID } from "node:crypto";
 import { SignJWT } from "jose";
@@ -9,6 +13,7 @@ import { NextResponse } from "next/server";
 import type { TicketResponse } from "@lct/protocol";
 import { getCurrentUser } from "@/lib/auth/session";
 import { serverEnv } from "@/lib/env.server";
+import { getVoiceProfile } from "@/lib/voice/repository";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -29,7 +34,12 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401, headers: NO_STORE });
   }
 
-  const ticket = await new SignJWT({})
+  const voice = await getVoiceProfile(user.id);
+  if (!voice) {
+    return NextResponse.json({ error: "voice_required" }, { status: 409, headers: NO_STORE });
+  }
+
+  const ticket = await new SignJWT({ voice: voice.providerVoiceId })
     .setProtectedHeader({ alg: "HS256", typ: "JWT" })
     .setSubject(user.id)
     .setIssuer(env.TICKET_ISSUER)

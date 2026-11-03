@@ -39,6 +39,7 @@ export const CloseCode = {
   quotaExceeded: 4402,
   sessionTimeout: 4408,
   sessionLimit: 4409,
+  voiceRequired: 4412,
   rateLimited: 4429,
   providerUnavailable: 4503,
 } as const;
@@ -51,6 +52,7 @@ export const ErrorCode = z.enum([
   "quota_exceeded", // daily minutes used up
   "rate_limited", // audio arriving faster than real time
   "provider_unavailable", // speech-to-text, translation or TTS failing
+  "voice_required", // the user hasn't created their voice yet (Phase 2 onboarding)
   "internal",
 ]);
 export type ErrorCode = z.infer<typeof ErrorCode>;
@@ -119,3 +121,57 @@ export const TicketResponse = z.object({
   gatewayUrl: z.url(),
 });
 export type TicketResponse = z.infer<typeof TicketResponse>;
+
+// ---- Voice cloning (Phase 2) ----------------------------------------------------
+// Flow: browser → web app (POST /api/voice, session + consent checks, DB) → gateway
+// (POST /internal/v1/voices, service token) → voice provider. Recordings are held in
+// memory only and are never written to disk on either server.
+
+/** Audience of the short-lived service tokens the web app signs for the gateway's internal API. */
+export const INTERNAL_TOKEN_AUDIENCE = "lct-gateway-internal";
+
+export const VOICE_SAMPLE_LIMITS = {
+  minSamples: 10,
+  maxSamples: 20,
+  /** 20 s of Opus at 96 kbps is ~240 KB; 512 KB leaves headroom for other codecs. */
+  maxSampleBytes: 512 * 1024,
+  /** Stays under the 4.5 MB request-body limit of serverless hosts such as Vercel. */
+  maxTotalBytes: 4 * 1024 * 1024,
+  /** ElevenLabs recommends 1–2 minutes of clean audio for an instant clone. */
+  minTotalSeconds: 45,
+  maxTotalSeconds: 240,
+  maxSampleSeconds: 20,
+} as const;
+
+export const VOICE_SAMPLE_MIME_TYPES = ["audio/webm", "audio/ogg", "audio/mp4"] as const;
+export type VoiceSampleMimeType = (typeof VOICE_SAMPLE_MIME_TYPES)[number];
+
+/** Provider voice ids (ElevenLabs uses 20 alphanumerics; mocks use "mock-…"). */
+export const ProviderVoiceId = z.string().regex(/^[A-Za-z0-9_-]{8,64}$/);
+
+export const VoiceCloneResult = z.object({
+  provider: z.string().min(1).max(40),
+  providerVoiceId: ProviderVoiceId,
+});
+export type VoiceCloneResult = z.infer<typeof VoiceCloneResult>;
+
+/**
+ * Identify an audio container from its first bytes. Both servers use this instead of
+ * trusting the declared Content-Type, so a renamed executable or HTML file is rejected.
+ */
+export function sniffAudioContainer(bytes: Uint8Array): VoiceSampleMimeType | null {
+  if (bytes.length < 12) return null;
+  // WebM / Matroska: EBML header 1A 45 DF A3
+  if (bytes[0] === 0x1a && bytes[1] === 0x45 && bytes[2] === 0xdf && bytes[3] === 0xa3) return "audio/webm";
+  // Ogg: "OggS"
+  if (bytes[0] === 0x4f && bytes[1] === 0x67 && bytes[2] === 0x67 && bytes[3] === 0x53) return "audio/ogg";
+  // MP4 / M4A (Safari's MediaRecorder): "ftyp" at offset 4
+  if (bytes[4] === 0x66 && bytes[5] === 0x74 && bytes[6] === 0x79 && bytes[7] === 0x70) return "audio/mp4";
+  return null;
+}
+
+export const AUDIO_FILE_EXTENSION: Record<VoiceSampleMimeType, string> = {
+  "audio/webm": "webm",
+  "audio/ogg": "ogg",
+  "audio/mp4": "m4a",
+};

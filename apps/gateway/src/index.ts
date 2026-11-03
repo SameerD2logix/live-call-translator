@@ -9,6 +9,7 @@ import Fastify from "fastify";
 import { MAX_WS_MESSAGE_BYTES } from "@lct/protocol";
 import { env } from "./config/env";
 import { logger } from "./lib/logger";
+import { registerVoiceRoutes } from "./http/voice-routes";
 import { createProviders } from "./providers";
 import { registerRealtimeRoute } from "./ws/realtime-route";
 
@@ -41,7 +42,9 @@ async function main(): Promise<void> {
 
   app.get("/healthz", { config: { rateLimit: false } }, async () => ({ ok: true }));
 
-  registerRealtimeRoute(app, createProviders());
+  const providers = createProviders();
+  registerRealtimeRoute(app, providers);
+  await registerVoiceRoutes(app, providers); // server-to-server only (service token required)
 
   await app.listen({ port: env.PORT, host: env.HOST });
 

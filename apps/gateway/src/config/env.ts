@@ -23,15 +23,17 @@ const EnvSchema = z
     TICKET_SECRET: z.string().min(32, "must be at least 32 characters"),
     TICKET_ISSUER: z.string().default("lct-web"),
     TICKET_AUDIENCE: z.string().default("lct-gateway"),
+    // Signs the web app's server-to-server calls (create/delete voice). Must differ from TICKET_SECRET.
+    INTERNAL_API_SECRET: z.string().min(32, "must be at least 32 characters"),
 
     STT_PROVIDER: z.enum(["elevenlabs", "mock"]).default("elevenlabs"),
     TRANSLATION_PROVIDER: z.enum(["anthropic", "mock"]).default("anthropic"),
     TTS_PROVIDER: z.enum(["elevenlabs", "mock"]).default("elevenlabs"),
+    VOICE_CLONE_PROVIDER: z.enum(["elevenlabs", "mock"]).default("elevenlabs"),
 
     ELEVENLABS_API_KEY: z.string().optional(),
     ELEVENLABS_STT_MODEL: z.string().default("scribe_v2_realtime"),
     ELEVENLABS_TTS_MODEL: z.string().default("eleven_flash_v2_5"),
-    ELEVENLABS_DEFAULT_VOICE_ID: z.string().optional(),
     STT_SECONDARY_LANGUAGES: csv("en").pipe(z.array(z.enum(["ur", "en"]))),
     VAD_SILENCE_SECS: z.coerce.number().min(0.3).max(3).default(0.7),
 
@@ -47,12 +49,18 @@ const EnvSchema = z
         ctx.addIssue({ code: "custom", path: [key], message: "is required for the selected provider" });
       }
     };
-    requireIf("ELEVENLABS_API_KEY", env.STT_PROVIDER === "elevenlabs" || env.TTS_PROVIDER === "elevenlabs");
-    requireIf("ELEVENLABS_DEFAULT_VOICE_ID", env.TTS_PROVIDER === "elevenlabs");
+    requireIf(
+      "ELEVENLABS_API_KEY",
+      [env.STT_PROVIDER, env.TTS_PROVIDER, env.VOICE_CLONE_PROVIDER].includes("elevenlabs"),
+    );
+    if (env.INTERNAL_API_SECRET === env.TICKET_SECRET) {
+      // One leaked key must not unlock both the call socket and voice management.
+      ctx.addIssue({ code: "custom", path: ["INTERNAL_API_SECRET"], message: "must be different from TICKET_SECRET" });
+    }
     requireIf("ANTHROPIC_API_KEY", env.TRANSLATION_PROVIDER === "anthropic");
 
     if (env.NODE_ENV === "production") {
-      if ([env.STT_PROVIDER, env.TRANSLATION_PROVIDER, env.TTS_PROVIDER].includes("mock")) {
+      if ([env.STT_PROVIDER, env.TRANSLATION_PROVIDER, env.TTS_PROVIDER, env.VOICE_CLONE_PROVIDER].includes("mock")) {
         ctx.addIssue({ code: "custom", path: ["STT_PROVIDER"], message: "mock providers are not allowed in production" });
       }
       if (env.ALLOWED_ORIGINS.some((origin) => !origin.startsWith("https://"))) {

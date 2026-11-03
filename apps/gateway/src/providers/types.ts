@@ -94,3 +94,30 @@ export interface TtsProvider {
   readonly id: string;
   stream(request: TtsRequest, signal?: AbortSignal): AsyncIterable<Buffer>;
 }
+
+// ---- Voice cloning (Phase 2) ------------------------------------------------
+export interface VoiceSample {
+  data: Buffer;
+  /** Verified by sniffing the bytes, not taken from the client's Content-Type. */
+  mimeType: string;
+  filename: string;
+}
+
+export interface VoiceCloneRequest {
+  /** Pseudonymous label stored at the provider. Never an email or real name. */
+  name: string;
+  samples: VoiceSample[];
+  /** Ask the provider to strip background noise (can hurt clean recordings). */
+  removeBackgroundNoise: boolean;
+}
+
+/**
+ * Creates and deletes a user's voice. A self-hosted XTTS/OpenVoice version would store a
+ * speaker embedding (encrypted) and return its id instead of calling a cloud API.
+ */
+export interface VoiceCloneProvider {
+  readonly id: string;
+  clone(request: VoiceCloneRequest, signal?: AbortSignal): Promise<{ providerVoiceId: string }>;
+  /** Must succeed (not throw) if the voice is already gone, so retries are safe. */
+  delete(providerVoiceId: string, signal?: AbortSignal): Promise<void>;
+}

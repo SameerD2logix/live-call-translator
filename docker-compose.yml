@@ -1,0 +1,15 @@
+# Local development database only. Production uses a managed Postgres (Neon, Supabase,
+# Render, Railway) with TLS and backups.
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: lct
+      POSTGRES_PASSWORD: lct_dev_password # local only; never reuse elsewhere
+      POSTGRES_DB: lct
+    ports:
+      - "127.0.0.1:5432:5432" # bound to localhost, not exposed on your network
+    volumes:
+      - lct-db:/var/lib/postgresql/data
+volumes:
+  lct-db:

@@ -15,6 +15,8 @@ const nextConfig: NextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
   transpilePackages: ["@lct/protocol"],
+  // Native / Node-only modules are loaded at runtime instead of bundled.
+  serverExternalPackages: ["@node-rs/argon2", "pg"],
   async headers() {
     return [{ source: "/:path*", headers: securityHeaders }];
   },

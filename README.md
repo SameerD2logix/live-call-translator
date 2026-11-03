@@ -1,7 +1,9 @@
 # Live Call Translator
 
 Speak Urdu on Zoom or Google Meet; your client hears English in your voice.
-This repository is at **Phase 1**: one direction (Urdu → English) with a live transcript and per-stage latency logging.
+This repository is at **Phase 2**: real accounts (email + password, optional two-step sign-in) and a voice onboarding
+that clones your own voice with explicit consent. Phase 1 delivered one-direction translation (Urdu → English) with a live
+transcript and per-stage latency logging.
 
 ## Architecture
 
@@ -25,9 +27,27 @@ This repository is at **Phase 1**: one direction (Urdu → English) with a live 
 protocol package, so a message shape can't drift between them. Self-hosted models (Whisper, NLLB, XTTS) are Python;
 they will run as separate GPU inference services that the gateway calls through the provider interfaces.
 
-**Provider layer.** `apps/gateway/src/providers/types.ts` defines `SttProvider`, `TranslationProvider` and `TtsProvider`.
-`providers/index.ts` is the only file that knows which implementations exist. Switching to self-hosted models means
-adding three classes and changing env vars; the pipeline, WebSocket code and browser don't change.
+**Provider layer.** `apps/gateway/src/providers/types.ts` defines `SttProvider`, `TranslationProvider`, `TtsProvider`
+and (Phase 2) `VoiceCloneProvider`. `providers/index.ts` is the only file that knows which implementations exist.
+Switching to self-hosted models means adding classes and changing env vars; the pipeline, WebSocket code and browser
+don't change.
+
+### Phase 2: accounts and voices
+
+```
+ Browser ──► Web app (Next.js + Better Auth) ──► Postgres: users, sessions, 2FA, voice_profile, voice_consent
+   │            │  POST /api/voice: session, consent, file checks, limits
+   │            └─► Gateway POST /internal/v1/voices (60 s single-use service token) ──► ElevenLabs IVC
+   │
+   └─ POST /api/realtime/ticket ─► ticket { sub: user, voice: <their own voice id from Postgres> }
+                                   └─► Gateway WebSocket speaks ONLY with the voice in the signed ticket
+```
+
+- **The web app owns the data**, the gateway stays stateless and remains the only holder of provider keys.
+- **Voice ownership is enforced by signature, not trust:** the browser never sends a voice id. The web app looks it up
+  by user id and signs it into the call ticket; the gateway accepts no other source.
+- **Recordings are never stored.** They live in the tab's memory, pass through both servers in memory once, and are
+  dropped after cloning. We keep only the provider's voice id. Users can save copies to their own device before upload.
 
 ## Folder structure
 
@@ -46,43 +66,70 @@ live-call-translator/
 │  │     ├─ providers/              types.ts, index.ts, elevenlabs/, anthropic/, mock/
 │  │     ├─ pipeline/               outgoing-pipeline.ts: STT → translate → ordered TTS
 │  │     └─ ws/realtime-route.ts    One WebSocket = one call session; all per-connection checks
+│  │     ├─ http/voice-routes.ts    Phase 2: internal create/delete voice API (service-token protected)
 │  │  └─ test/pipeline.smoke.ts     Runs the real pipeline on mock providers; validates every event
 │  └─ web/                          Next.js app
 │     ├─ proxy.ts                   Per-request nonce CSP (middleware.ts on Next 15)
 │     ├─ next.config.ts             Static security headers
-│     ├─ app/api/realtime/ticket/   Mints the 60 s WebSocket ticket
-│     ├─ lib/auth/session.ts        PHASE 1 placeholder → Auth.js in Phase 2
+│     ├─ app/api/realtime/ticket/   Mints the 60 s WebSocket ticket (now carries the user's voice id)
+│     ├─ app/api/auth/[...all]/     Better Auth: sign-up/in, email verification, reset, 2FA, delete account
+│     ├─ app/api/voice/             Create (POST) / delete (DELETE) the user's voice clone
+│     ├─ app/{sign-in,sign-up,two-factor,forgot-password,reset-password,onboarding,settings}/
+│     ├─ lib/auth.ts                Better Auth config: Argon2id, verification, 2FA, breach check, rate limits
+│     ├─ lib/voice/                 consent text, reading script, repository (SQL), gateway admin client
+│     ├─ lib/audio/sample-recorder.ts  MediaRecorder takes with level/clipping checks
+│     ├─ db/migrations/             Our SQL (voice_profile, voice_consent); scripts/migrate.mjs runs everything
 │     ├─ lib/audio/                 mic-capture.ts, pcm-player.ts
 │     ├─ lib/realtime/              gateway-client.ts
 │     ├─ public/worklets/           pcm-capture-worklet.js (resamples mic to 16 kHz PCM16)
 │     ├─ hooks/                     use-translator-session.ts (session state machine)
 │     ├─ components/call/           CallScreen, StartStopButton, StatusIndicator, LatencyBadge, TranscriptPanel
+│     ├─ components/{auth,onboarding,settings,ui}/
 │     └─ types/css.d.ts             Lets TypeScript accept global CSS imports
+├─ docker-compose.yml               Local Postgres (bound to 127.0.0.1)
 └─ .github/                         CI (lint, typecheck, smoke test, build, audit) and Dependabot
 ```
 
 ## Run it locally
 
-Requires Node 22+ and pnpm 10 (`corepack enable`).
+Requires Node 22+, pnpm 10 (`corepack enable`) and Docker (for local Postgres).
 
 ```bash
 pnpm install
+docker compose up -d db
 cp apps/gateway/.env.example apps/gateway/.env
 cp apps/web/.env.example apps/web/.env.local
-openssl rand -base64 48   # paste into TICKET_SECRET (gateway) AND GATEWAY_TICKET_SECRET (web)
 ```
+
+Generate **three different** secrets with `openssl rand -base64 48`:
+
+| Secret | apps/web/.env.local | apps/gateway/.env |
+|---|---|---|
+| Sessions + 2FA encryption | `BETTER_AUTH_SECRET` | – |
+| Call tickets | `GATEWAY_TICKET_SECRET` | `TICKET_SECRET` (same value) |
+| Voice API (server-to-server) | `INTERNAL_API_SECRET` | `INTERNAL_API_SECRET` (same value) |
+
+Then create the tables: `pnpm --filter @lct/web db:migrate` (Better Auth's tables via its CLI, then ours).
 
 **0. Smoke test (10 seconds, no keys).** `pnpm --filter @lct/gateway smoke` runs the real pipeline on mock
 providers and checks every event against the shared protocol.
 
-**1. Mock mode first (no keys, no cost).** In `apps/gateway/.env` set `STT_PROVIDER=mock`, `TRANSLATION_PROVIDER=mock`,
-`TTS_PROVIDER=mock`. Run `pnpm dev`, open http://localhost:3000, press Start, talk for two seconds, then pause.
-You should see a fixed Urdu sentence, its English translation, hear a short tone, and see the delay badge update.
+**1. Mock mode first (no keys, no cost).** In `apps/gateway/.env` set all four providers to `mock`
+(`STT_PROVIDER`, `TRANSLATION_PROVIDER`, `TTS_PROVIDER`, `VOICE_CLONE_PROVIDER`). Run `pnpm dev` and open
+http://localhost:3000:
 
-**2. Real providers.** Set the three providers back, add `ELEVENLABS_API_KEY`, `ELEVENLABS_DEFAULT_VOICE_ID`
-(any voice from your ElevenLabs library for now) and `ANTHROPIC_API_KEY`. Restart `pnpm dev`.
+1. Create an account. Without `RESEND_API_KEY`, the confirmation link is printed in the terminal running `pnpm dev`.
+2. Record at least 10 sentences (any speech works in mock mode), tick the consent box, create the voice.
+3. On the call screen, press Start, talk for two seconds, then pause: a fixed Urdu sentence, its translation and a tone.
+4. In Settings, turn on two-step sign-in, sign out, sign back in with a code, then try deleting your voice.
+
+**2. Real providers.** Set the providers back to `elevenlabs` / `anthropic` and add `ELEVENLABS_API_KEY` (with voice
+cloning permission) and `ANTHROPIC_API_KEY`. Delete your mock voice in Settings and record a real one.
 
 Wear headphones. Otherwise the translated voice from your speakers goes back into the microphone.
+
+**Production email:** create a Resend account, verify your sending domain, and set `RESEND_API_KEY` and `EMAIL_FROM`.
+The web app refuses to start in production without them.
 
 ## How one sentence flows, and where the time goes
 
@@ -99,7 +146,7 @@ and reports it back to the gateway log as `client playback delay`.
 
 Tuning: lowering `VAD_SILENCE_SECS` cuts delay but splits sentences more often. Test 0.5–0.8 with real speech.
 
-## Security in Phase 1
+## Security
 
 | Requirement | Where |
 |---|---|
@@ -116,18 +163,40 @@ Tuning: lowering `VAD_SILENCE_SECS` cuts delay but splits sentences more often. 
 | Logging | pino with a redact list; only ids, counts, durations and error codes are logged |
 | Prompt injection | Speech wrapped in delimiter tags with angle brackets stripped; system prompt says it's data |
 | Dependencies | Dependabot, `pnpm audit` in CI, pnpm 10 install-script allow-list |
+| **Phase 2** | |
+| Accounts | Better Auth on our Postgres; email verification required before the first session |
+| Passwords | Argon2id (19 MiB, 2 passes), 12–128 characters, checked against Have I Been Pwned (k-anonymity) |
+| Two-step sign-in | Optional TOTP with one-time backup codes; turning it on requires a verified code; every change needs the password |
+| Brute force | Database-backed rate limits: sign-in 5 per 5 min, 2FA 5 per 5 min, sign-up and reset per hour |
+| Sessions | 7 days, refreshed daily; password reset signs out every session; secure cookies in production |
+| Account enumeration | Sign-up, sign-in and reset show the same message whether or not an email is registered |
+| Open redirects | `?next=` accepts same-site paths only |
+| Voice consent | Explicit checkbox with the exact statement; stored with version, SHA-256 of the wording and time, before cloning |
+| Voice ownership | One voice per user (unique constraint); id only from our database via the signed ticket |
+| Voice uploads | Same-origin + session; Content-Length checked before reading; 10–20 files, ≤512 KB each, ≤4 MB total; real type from magic bytes (WebM/Ogg/MP4); plausible durations; 5 attempts per day |
+| Voice data | No recordings stored; pseudonymous name at the provider (hash of user id, no email) |
+| Server-to-server | Separate `INTERNAL_API_SECRET`; 60 s single-use tokens scoped to one action; delete tokens bound to one voice id |
+| Deletion | "Delete my voice" removes it at the provider, then here; deleting the account deletes the voice first and aborts if that fails, so no clone is orphaned |
 
 ### Known gaps, tracked for later phases
 
-- **Sign-in is a placeholder.** `getCurrentUser()` returns a dev user only in development. In production it returns
-  nobody, so a deployed build is unusable until Phase 2 adds Auth.js. This is intentional.
-- **In-memory limits and ticket replay cache** work for one gateway instance. Move to Redis before scaling out.
+- **Liveness check for voice uploads.** Nothing yet proves the recordings are the account owner reading our sentences;
+  someone could upload another person's speech. Next hardening step: transcribe each sample and require it to match
+  the prompted sentence (random order per session), and keep ElevenLabs' own safeguards in place.
+- **Sign-up reveals existing emails to direct API callers.** The UI hides it, but Better Auth's endpoint answers
+  differently for registered emails; rate limits slow probing. Revisit when Better Auth offers an enumeration-safe mode.
+- **Consent records are deleted with the account** (right to erasure). If you need longer proof of consent for legal
+  reasons, keep a pseudonymous copy and say so in your privacy policy.
+- **The voice id inside the call ticket is readable** by the user's own browser (signed, not encrypted). It is useless
+  without our ElevenLabs key; encrypt the ticket (JWE) if you'd rather not expose it.
+- **In-memory limits and token replay caches** (call tickets and service tokens) work for one gateway instance. Move to
+  Redis before scaling out.
 - **Provider data retention.** Audio and text go to ElevenLabs and Anthropic. Review each provider's retention
   settings (Scribe has an `enable_logging` option; zero-retention may need a higher plan) and disclose them in your privacy policy.
 - **No auto-reconnect** if the speech service drops mid-call; the user presses Start again.
 - **Stop discards the sentence in progress.** A later version should commit it and finish speaking before closing.
-- **The interface is English-only.** Urdu transcripts already render right-to-left in Nastaliq; the full bilingual
-  Urdu/English UI with an RTL layout arrives with the onboarding screens in Phase 2–3.
+- **The interface is English-only.** Urdu text (transcripts, the reading script, the consent statement) renders
+  right-to-left in Nastaliq; the full Urdu/English UI toggle comes in Phase 3 with the audio-cable wizard.
 - CSP allows inline styles (`style-src 'unsafe-inline'`), required by React style attributes; scripts remain nonce-only.
 - Pin GitHub Actions to commit SHAs.
 
@@ -141,6 +210,13 @@ curl -i -N -H "Connection: Upgrade" -H "Upgrade: websocket" -H "Sec-WebSocket-Ve
 
 # Ticket endpoint must refuse cross-origin requests (expect 403)
 curl -i -X POST -H "Origin: https://evil.example" http://localhost:3000/api/realtime/ticket
+
+# Internal voice API without a service token (expect 401)
+curl -i -X DELETE http://localhost:8787/internal/v1/voices/abcdefghij
+
+# Voice upload from another site (expect 403), and signed out (expect 401)
+curl -i -X POST -H "Origin: https://evil.example" http://localhost:3000/api/voice
+curl -i -X POST -H "Origin: http://localhost:3000" http://localhost:3000/api/voice
 ```
 
 In DevTools → Network, confirm no provider keys appear anywhere and the WebSocket URL contains no token.
@@ -165,7 +241,8 @@ Still to test live in Phase 0:
 - Urdu accuracy with English words mixed in, with and without `language_code=ur`.
 - The best `VAD_SILENCE_SECS` for long Urdu sentences (try 0.5–0.8).
 
-## Next: Phase 2
+## Next: Phase 3
 
-Auth.js with Postgres (email + password, argon2, optional 2FA), the voice-recording onboarding with an explicit consent
-checkbox, cloning through the provider, storing only the voice ID, and delete-my-voice / delete-my-account.
+Call integration: a guided virtual-audio-cable wizard (VB-Audio Cable on Windows, BlackHole on Mac) with output device
+selection (`AudioContext.setSinkId`), the incoming direction (client's English → Urdu subtitles from tab audio), the
+Urdu/English interface toggle, and testing on Zoom, Google Meet, Microsoft Teams and WhatsApp desktop.

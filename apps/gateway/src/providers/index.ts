@@ -9,13 +9,15 @@ import { env } from "../config/env";
 import { AnthropicTranslator } from "./anthropic/translator";
 import { ElevenLabsScribeStt } from "./elevenlabs/scribe-stt";
 import { ElevenLabsTts } from "./elevenlabs/tts";
-import { MockStt, MockTranslator, MockTts } from "./mock";
-import type { SttProvider, TranslationProvider, TtsProvider } from "./types";
+import { ElevenLabsVoiceCloner } from "./elevenlabs/voice-clone";
+import { MockStt, MockTranslator, MockTts, MockVoiceCloner } from "./mock";
+import type { SttProvider, TranslationProvider, TtsProvider, VoiceCloneProvider } from "./types";
 
 export interface Providers {
   stt: SttProvider;
   translation: TranslationProvider;
   tts: TtsProvider;
+  voices: VoiceCloneProvider;
 }
 
 function required(value: string | undefined, name: string): string {
@@ -60,6 +62,15 @@ function createTts(): TtsProvider {
   }
 }
 
+function createVoiceCloner(): VoiceCloneProvider {
+  switch (env.VOICE_CLONE_PROVIDER) {
+    case "mock":
+      return new MockVoiceCloner();
+    case "elevenlabs":
+      return new ElevenLabsVoiceCloner({ apiKey: required(env.ELEVENLABS_API_KEY, "ELEVENLABS_API_KEY") });
+  }
+}
+
 export function createProviders(): Providers {
-  return { stt: createStt(), translation: createTranslation(), tts: createTts() };
+  return { stt: createStt(), translation: createTranslation(), tts: createTts(), voices: createVoiceCloner() };
 }

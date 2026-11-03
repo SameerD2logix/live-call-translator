@@ -30,7 +30,6 @@ import type { Providers } from "../providers";
 import { ProviderError } from "../providers/types";
 import { dailyUsage, sessionSlots, TokenBucket } from "../security/limits";
 import { verifyTicket } from "../security/ticket";
-import { resolveVoiceId } from "../services/voices";
 
 const AUTH_TIMEOUT_MS = 5_000;
 const HEARTBEAT_INTERVAL_MS = 20_000;
@@ -62,6 +61,8 @@ class RealtimeConnection {
   private readonly id = randomUUID();
   private log = logger.child({ conn: this.id });
   private userId: string | null = null;
+  /** The user's own voice, from the signed ticket. Never accepted from a client message. */
+  private voiceId: string | null = null;
   private authInFlight = false;
   private pipeline: OutgoingPipeline | null = null;
   private audioBytes = 0;
@@ -152,8 +153,9 @@ class RealtimeConnection {
   private async authenticate(ticket: string): Promise<void> {
     this.authInFlight = true;
     let userId: string;
+    let voiceId: string | null;
     try {
-      ({ userId } = await verifyTicket(ticket));
+      ({ userId, voiceId } = await verifyTicket(ticket));
     } catch {
       // Don't log the ticket or the exact reason; both help attackers more than us.
       return this.fail("unauthorized", "Your session ticket is invalid or expired. Press Start again.", CloseCode.unauthorized);
@@ -166,6 +168,7 @@ class RealtimeConnection {
       return this.fail("session_limit", "A session is already open in another tab or window. Close it and try again.", CloseCode.sessionLimit);
     }
     this.userId = userId;
+    this.voiceId = voiceId;
     clearTimeout(this.authTimer);
     this.log = this.log.child({ user: userId });
     this.send({
@@ -180,8 +183,11 @@ class RealtimeConnection {
     if (this.pipeline) return;
     if (this.remainingQuotaMs(userId) <= 0) return this.fail("quota_exceeded", QUOTA_MESSAGE, CloseCode.quotaExceeded);
 
-    const voiceId = await resolveVoiceId(userId); // server-side lookup, never from the client
-    if (this.closed) return;
+    // The voice comes from the signed ticket, which the web app filled from its database.
+    const voiceId = this.voiceId;
+    if (!voiceId) {
+      return this.fail("voice_required", "Record your voice before your first call.", CloseCode.voiceRequired);
+    }
 
     const pipeline = new OutgoingPipeline({
       providers: this.providers,

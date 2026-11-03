@@ -7,13 +7,13 @@
 import pino from "pino";
 import { INPUT_SAMPLE_RATE, ServerEvent } from "@lct/protocol";
 import { OutgoingPipeline } from "../src/pipeline/outgoing-pipeline";
-import { MockStt, MockTranslator, MockTts } from "../src/providers/mock";
+import { MockStt, MockTranslator, MockTts, MockVoiceCloner } from "../src/providers/mock";
 
 const events: ServerEvent[] = [];
 let audioBytes = 0;
 
 const pipeline = new OutgoingPipeline({
-  providers: { stt: new MockStt(), translation: new MockTranslator(), tts: new MockTts() },
+  providers: { stt: new MockStt(), translation: new MockTranslator(), tts: new MockTts(), voices: new MockVoiceCloner() },
   voiceId: "mock-voice",
   vadSilenceMs: 700,
   secondaryLanguages: [],

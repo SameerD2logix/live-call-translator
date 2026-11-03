@@ -16,7 +16,7 @@ export interface GatewayHandlers {
 
 export class GatewayError extends Error {
   constructor(
-    readonly code: "unauthorized" | "ticket_failed" | "connect_failed" | "insecure" | "rejected",
+    readonly code: "unauthorized" | "voice_required" | "ticket_failed" | "connect_failed" | "insecure" | "rejected",
     message: string,
   ) {
     super(message);
@@ -39,7 +39,8 @@ export class GatewayClient {
 
   async connect(): Promise<ReadyEvent> {
     const res = await fetch("/api/realtime/ticket", { method: "POST", cache: "no-store" });
-    if (res.status === 401) throw new GatewayError("unauthorized", "Sign in to start translating.");
+    if (res.status === 401) throw new GatewayError("unauthorized", "Your sign-in expired. Refresh the page and sign in again.");
+    if (res.status === 409) throw new GatewayError("voice_required", "Record your voice before your first call (Settings → Your voice).");
     if (!res.ok) throw new GatewayError("ticket_failed", "Couldn't start a session. Press Start to try again.");
     const { ticket, gatewayUrl } = TicketResponse.parse(await res.json());
 

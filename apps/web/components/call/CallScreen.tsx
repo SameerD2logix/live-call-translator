@@ -1,13 +1,14 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, type ReactNode } from "react";
 import { useTranslatorSession } from "@/hooks/use-translator-session";
 import { LatencyBadge } from "./LatencyBadge";
 import { StartStopButton } from "./StartStopButton";
 import { StatusIndicator } from "./StatusIndicator";
 import { TranscriptPanel } from "./TranscriptPanel";
 
-export function CallScreen() {
+/** `accountSlot`: links rendered by the server page (e.g. Settings). */
+export function CallScreen({ accountSlot }: { accountSlot?: ReactNode }) {
   const { phase, status, muted, error, segments, partial, lastDelayMs, start, stop, toggleMute, clear, subscribeLevel } =
     useTranslatorSession();
   const active = phase === "starting" || phase === "live";
@@ -30,6 +31,7 @@ export function CallScreen() {
         <div className="flex items-center gap-2">
           <StatusIndicator status={status} />
           <LatencyBadge ms={lastDelayMs} />
+          {accountSlot}
         </div>
       </header>
 

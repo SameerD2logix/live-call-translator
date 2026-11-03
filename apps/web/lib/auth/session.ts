@@ -1,21 +1,28 @@
 import "server-only";
-import { serverEnv } from "@/lib/env.server";
+import { headers } from "next/headers";
+import { redirect } from "next/navigation";
+import { auth } from "@/lib/auth";
 
 export interface SessionUser {
   id: string;
+  name: string;
+  email: string;
+  twoFactorEnabled: boolean;
 }
 
-/**
- * PHASE 1 PLACEHOLDER. Phase 2 replaces this body with Auth.js (email + password, argon2,
- * optional 2FA) backed by Postgres, e.g. `const session = await auth(); return session?.user ?? null`.
- *
- * Until then it returns a fixed development user ONLY when NODE_ENV is not production AND
- * DEV_AUTH_BYPASS=true. In production it always returns null, so a deployed build cannot be
- * used by anyone until real sign-in exists. This is deliberate.
- */
+/** The signed-in user for this request, or null. Server components and route handlers only. */
 export async function getCurrentUser(): Promise<SessionUser | null> {
-  if (process.env.NODE_ENV !== "production" && serverEnv().DEV_AUTH_BYPASS === "true") {
-    return { id: "dev-user" };
-  }
-  return null;
+  const session = await auth.api.getSession({ headers: await headers() });
+  if (!session) return null;
+  const user = session.user as typeof session.user & { twoFactorEnabled?: boolean | null };
+  // requireEmailVerification already blocks unverified sessions; this is a second check.
+  if (!user.emailVerified) return null;
+  return { id: user.id, name: user.name, email: user.email, twoFactorEnabled: Boolean(user.twoFactorEnabled) };
+}
+
+/** Use in protected pages: sends signed-out visitors to sign-in and back here afterwards. */
+export async function requireUser(returnTo: string): Promise<SessionUser> {
+  const user = await getCurrentUser();
+  if (!user) redirect(`/sign-in?next=${encodeURIComponent(returnTo)}`);
+  return user;
 }

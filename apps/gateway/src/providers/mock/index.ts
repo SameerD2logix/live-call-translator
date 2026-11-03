@@ -4,6 +4,7 @@
  * its English translation, and a short tone instead of speech.
  * The env validator refuses to start with mocks in production.
  */
+import { randomUUID } from "node:crypto";
 import type {
   SttProvider,
   SttStream,
@@ -12,6 +13,8 @@ import type {
   TranslationRequest,
   TtsProvider,
   TtsRequest,
+  VoiceCloneProvider,
+  VoiceCloneRequest,
 } from "../types";
 
 const MOCK_URDU = "میں یہ کام کل تک مکمل کر دوں گا";
@@ -106,5 +109,20 @@ export class MockTts implements TtsProvider {
       yield buf;
       await sleep(20);
     }
+  }
+}
+
+/** Pretends to clone: returns a fake voice id after a short delay. Works with MockTts. */
+export class MockVoiceCloner implements VoiceCloneProvider {
+  readonly id = "mock";
+
+  async clone(_request: VoiceCloneRequest, signal?: AbortSignal): Promise<{ providerVoiceId: string }> {
+    await sleep(800);
+    if (signal?.aborted) throw new Error("aborted");
+    return { providerVoiceId: `mock-${randomUUID().slice(0, 8)}` };
+  }
+
+  async delete(): Promise<void> {
+    await sleep(100);
   }
 }
