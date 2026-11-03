@@ -4,13 +4,39 @@
  *
  *  - JSON text frames carry control messages and events. The gateway validates every
  *    incoming message (the browser is untrusted); the browser validates every event too.
- *  - Binary frames carry audio only, never base64-in-JSON:
- *      browser → gateway : mic audio, PCM16 little-endian, mono, INPUT_SAMPLE_RATE
- *      gateway → browser : translated speech, PCM16 LE mono, at the rate announced in "tts.start"
+ *  - Binary frames carry audio only, never base64-in-JSON. Since v2 (Phase 3) one socket carries
+ *    BOTH directions, so every binary frame starts with one channel byte (see AudioChannel):
+ *      browser → gateway : [1] your mic        | [2] the call's audio (the client speaking)
+ *      gateway → browser : [1] English for the call (→ virtual cable) | [2] Urdu for your headphones
+ *    The rest of the frame is PCM16 little-endian mono: INPUT_SAMPLE_RATE upstream, and the rate
+ *    announced in "tts.start" downstream.
  */
 import { z } from "zod";
 
-export const PROTOCOL_VERSION = 1 as const;
+export const PROTOCOL_VERSION = 2 as const;
+
+// ---- Directions -----------------------------------------------------------------
+/** "out": you speak Urdu → the client hears English. "in": the client speaks English → you get Urdu. */
+export const Direction = z.enum(["out", "in"]);
+export type Direction = z.infer<typeof Direction>;
+
+/** First byte of every binary WebSocket frame. */
+export const AudioChannel = { out: 1, in: 2 } as const satisfies Record<Direction, number>;
+
+/** Prefix PCM with its channel byte. */
+export function encodeAudioFrame(dir: Direction, pcm: Uint8Array): Uint8Array<ArrayBuffer> {
+  const frame = new Uint8Array(pcm.byteLength + 1);
+  frame[0] = AudioChannel[dir];
+  frame.set(pcm, 1);
+  return frame;
+}
+
+/** Split a binary frame into its direction and PCM payload (a view, not a copy). Null if malformed. */
+export function decodeAudioFrame(frame: Uint8Array): { dir: Direction; pcm: Uint8Array } | null {
+  if (frame.byteLength < 3) return null;
+  const dir = frame[0] === AudioChannel.out ? "out" : frame[0] === AudioChannel.in ? "in" : null;
+  return dir ? { dir, pcm: frame.subarray(1) } : null;
+}
 
 // ---- Audio --------------------------------------------------------------------
 /** Mic audio sent upstream. 16 kHz mono is what speech-to-text is tuned for. */
@@ -69,6 +95,9 @@ export const ClientMessage = z.discriminatedUnion("type", [
   /** Phase 1 supports one direction: Urdu speech → English speech. */
   z.strictObject({ type: z.literal("session.start"), source: z.literal("ur"), target: z.literal("en") }),
   z.strictObject({ type: z.literal("session.stop") }),
+  /** Start translating the call's audio (sent as channel 2) into Urdu. Requires an active connection. */
+  z.strictObject({ type: z.literal("incoming.start"), speakUrdu: z.boolean() }),
+  z.strictObject({ type: z.literal("incoming.stop") }),
   /** Browser-measured delay until the translated audio became audible. Numbers only. */
   z.strictObject({
     type: z.literal("client.metrics"),
@@ -91,25 +120,31 @@ export const ServerEvent = z.discriminatedUnion("type", [
     /** Pause length that ends a sentence; the browser adds it to its delay estimate. */
     vadSilenceMs: z.number().int().nonnegative(),
     ttsSampleRate: z.number().int().positive(),
+    /** Whether the gateway can speak the client's words to you in Urdu (a voice is configured). */
+    urduVoiceAvailable: z.boolean(),
   }),
   z.object({ type: z.literal("session.started") }),
-  /** Interim Urdu text for the sentence being spoken. Replaces the previous partial. */
-  z.object({ type: z.literal("transcript.partial"), text: transcript }),
-  /** Final Urdu text for one sentence. */
-  z.object({ type: z.literal("transcript.final"), segmentId, text: transcript }),
-  z.object({ type: z.literal("translation"), segmentId, text: translation }),
+  z.object({ type: z.literal("incoming.started"), speakUrdu: z.boolean() }),
+  z.object({ type: z.literal("incoming.stopped") }),
+  // Segment events carry `dir`; segment ids are counted separately per direction.
+  /** Interim source-language text for the sentence being spoken. Replaces the previous partial. */
+  z.object({ type: z.literal("transcript.partial"), dir: Direction, text: transcript }),
+  /** Final source-language text for one sentence. */
+  z.object({ type: z.literal("transcript.final"), dir: Direction, segmentId, text: transcript }),
+  z.object({ type: z.literal("translation"), dir: Direction, segmentId, text: translation }),
   /** One sentence failed; the session continues. */
   z.object({
     type: z.literal("segment.error"),
+    dir: Direction,
     segmentId,
     stage: z.enum(["translation", "tts"]),
     message: z.string().max(300),
   }),
-  /** Binary audio frames that follow, until tts.end, belong to this sentence. */
-  z.object({ type: z.literal("tts.start"), segmentId, sampleRate: z.number().int().positive() }),
-  z.object({ type: z.literal("tts.end"), segmentId }),
+  /** Binary frames on this direction's channel, until tts.end, belong to this sentence. */
+  z.object({ type: z.literal("tts.start"), dir: Direction, segmentId, sampleRate: z.number().int().positive() }),
+  z.object({ type: z.literal("tts.end"), dir: Direction, segmentId }),
   /** Per-stage timings in milliseconds for one sentence. */
-  z.object({ type: z.literal("latency"), segmentId, stages: z.record(z.string(), z.number()) }),
+  z.object({ type: z.literal("latency"), dir: Direction, segmentId, stages: z.record(z.string(), z.number()) }),
   /** Sent right before the gateway closes the socket. `message` is user-facing and written by us. */
   z.object({ type: z.literal("error"), code: ErrorCode, message: z.string().max(300) }),
 ]);

@@ -69,3 +69,17 @@ body {
     box-shadow: 0 0 0 6px color-mix(in oklab, var(--turquoise) calc(var(--level, 0) * 100%), transparent);
   }
 }
+
+/*
+ * Urdu interface: Nastaliq for everything, with the taller line height the script needs.
+ * Anything marked lang="en" (English transcript lines, untranslated pages) switches back.
+ */
+html:lang(ur) body {
+  font-family: var(--font-nastaliq), "Noto Nastaliq Urdu", "Jameel Noori Nastaleeq", serif;
+  line-height: 2.1;
+}
+
+html:lang(ur) [lang="en"] {
+  font-family: var(--font-atkinson), ui-sans-serif, system-ui, sans-serif;
+  line-height: 1.5;
+}

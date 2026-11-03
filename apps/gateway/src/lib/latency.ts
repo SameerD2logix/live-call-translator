@@ -28,7 +28,8 @@ export class LatencyTracker {
    *  tts_first_audio_ms  TTS started -> first audio byte
    *  tts_total_ms        TTS started -> last audio byte
    *  server_ms           committed -> first audio byte (everything the gateway adds)
-   *  est_delay_ms        vad_silence_ms + server_ms (gateway-side estimate of delay after you stop talking)
+   *  est_delay_ms        vad_silence_ms + server_ms (gateway-side estimate of delay after the speaker stops);
+   *                      for subtitles-only segments, vad_silence_ms + translate_ms
    */
   report(vadSilenceMs: number): Record<string, number> {
     const out: Record<string, number> = { vad_silence_ms: vadSilenceMs };
@@ -42,7 +43,8 @@ export class LatencyTracker {
     add("tts_total_ms", this.between("tts_requested", "tts_done"));
     const server = this.between("committed", "tts_first_audio");
     add("server_ms", server);
-    if (server !== undefined) out.est_delay_ms = vadSilenceMs + server;
+    const untilOutput = server ?? this.between("committed", "translated");
+    if (untilOutput !== undefined) out.est_delay_ms = vadSilenceMs + untilOutput;
     return out;
   }
 }

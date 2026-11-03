@@ -13,7 +13,7 @@ export default async function SettingsPage() {
   const voice = await getVoiceProfile(user.id);
 
   return (
-    <main className="mx-auto flex min-h-dvh w-full max-w-2xl flex-col gap-10 px-5 py-10">
+    <main lang="en" dir="ltr" className="mx-auto flex min-h-dvh w-full max-w-2xl flex-col gap-10 px-5 py-10">
       <header className="flex items-center justify-between gap-4">
         <Link href="/" className="font-bold">
           Back to the call screen

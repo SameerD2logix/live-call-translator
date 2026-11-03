@@ -1,6 +1,8 @@
 /**
- * ElevenLabs streaming text-to-speech over HTTP.
- * Endpoint: POST /v1/text-to-speech/{voice_id}/stream?output_format=pcm_24000
+ * ElevenLabs streaming text-to-speech over HTTP. Two endpoints, same PCM output:
+ *  - "tts":      POST /v1/text-to-speech/{voice_id}/stream   (Flash v2.5: lowest latency, 32 languages)
+ *  - "dialogue": POST /v1/text-to-dialogue/stream            (Eleven v4 family, 90+ languages incl. Urdu;
+ *                v4 models are served through Text to Dialogue, not the plain TTS endpoint)
  *
  * Why HTTP streaming instead of the stream-input WebSocket: we synthesize one finished
  * sentence at a time, so a single request per sentence is simpler and still starts
@@ -8,22 +10,36 @@
  */
 import { ProviderError, errorCodeForStatus, type TtsProvider, type TtsRequest } from "../types";
 
-const API_BASE = "https://api.elevenlabs.io/v1/text-to-speech";
+const API_BASE = "https://api.elevenlabs.io/v1";
 const REQUEST_TIMEOUT_MS = 15_000;
 
 export interface ElevenLabsTtsConfig {
   apiKey: string;
   modelId: string;
+  endpoint?: "tts" | "dialogue";
 }
 
 export class ElevenLabsTts implements TtsProvider {
-  readonly id = "elevenlabs-tts";
+  readonly id: string;
 
-  constructor(private readonly cfg: ElevenLabsTtsConfig) {}
+  constructor(private readonly cfg: ElevenLabsTtsConfig) {
+    this.id = cfg.endpoint === "dialogue" ? "elevenlabs-dialogue" : "elevenlabs-tts";
+  }
 
   async *stream(request: TtsRequest, signal?: AbortSignal): AsyncIterable<Buffer> {
-    const url = new URL(`${API_BASE}/${encodeURIComponent(request.voiceId)}/stream`);
+    const dialogue = this.cfg.endpoint === "dialogue";
+    const url = new URL(
+      dialogue ? `${API_BASE}/text-to-dialogue/stream` : `${API_BASE}/text-to-speech/${encodeURIComponent(request.voiceId)}/stream`,
+    );
     url.searchParams.set("output_format", `pcm_${request.sampleRate}`);
+    const body = dialogue
+      ? { inputs: [{ text: request.text, voice_id: request.voiceId }], model_id: this.cfg.modelId, language_code: request.language }
+      : {
+          text: request.text,
+          model_id: this.cfg.modelId,
+          // Forces the pronunciation language. Supported by the Flash/Turbo v2.5 models.
+          language_code: request.language,
+        };
 
     const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
     let response: Response;
@@ -31,12 +47,7 @@ export class ElevenLabsTts implements TtsProvider {
       response = await fetch(url, {
         method: "POST",
         headers: { "xi-api-key": this.cfg.apiKey, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          text: request.text,
-          model_id: this.cfg.modelId,
-          // Forces English pronunciation. Supported by the Flash/Turbo v2.5 models.
-          language_code: request.language,
-        }),
+        body: JSON.stringify(body),
         signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
       });
     } catch {

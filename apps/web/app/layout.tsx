@@ -1,6 +1,8 @@
 import type { Metadata, Viewport } from "next";
 import { Atkinson_Hyperlegible, Noto_Nastaliq_Urdu } from "next/font/google";
 import type { ReactNode } from "react";
+import { dirOf } from "@/lib/i18n/dictionary";
+import { getLang } from "@/lib/i18n/server";
 import "./globals.css";
 
 // Atkinson Hyperlegible: designed for low-vision legibility. Noto Nastaliq: proper Urdu script.
@@ -22,9 +24,11 @@ export const viewport: Viewport = {
 // Render per request so Next.js can stamp the CSP nonce from proxy.ts onto its scripts.
 export const dynamic = "force-dynamic";
 
-export default function RootLayout({ children }: { children: ReactNode }) {
+export default async function RootLayout({ children }: { children: ReactNode }) {
+  // The language toggle sets a cookie; Urdu switches the whole document to right-to-left.
+  const lang = await getLang();
   return (
-    <html lang="en" className={`${atkinson.variable} ${nastaliq.variable}`}>
+    <html lang={lang} dir={dirOf(lang)} className={`${atkinson.variable} ${nastaliq.variable}`}>
       <body className="min-h-dvh bg-bg font-sans text-ink antialiased">{children}</body>
     </html>
   );

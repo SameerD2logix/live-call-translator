@@ -1,13 +1,17 @@
 /**
- * WebSocket endpoint: one connection = one call session.
+ * WebSocket endpoint: one connection = one call, carrying both directions.
+ *
+ *   "out": your mic (channel 1 up)   → translated English in your voice (channel 1 down → virtual cable)
+ *   "in":  call audio (channel 2 up) → Urdu subtitles (JSON) + optional Urdu voice (channel 2 down)
  *
  * Security checks, in order:
  *  1. Origin allow-list before the HTTP upgrade (blocks cross-site WebSocket hijacking).
  *  2. Per-IP connection rate limit (registered globally in index.ts).
  *  3. First message must be a valid single-use ticket within 5 s, or we disconnect.
  *  4. Every text message is size-capped and Zod-validated; unknown fields are rejected.
- *  5. Audio frames: size/alignment checked, rate-limited to 1.5x real time.
- *  6. One live session per user, a maximum session length, and a daily minutes quota.
+ *  5. Audio frames: channel byte, size and alignment checked; each direction rate-limited to 1.5x real time.
+ *  6. One live connection per user, a maximum session length, and a daily minutes quota (both directions count).
+ *  7. Speech in the call uses only the voice id from the signed ticket (the user's own clone).
  */
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
@@ -19,13 +23,16 @@ import {
   MAX_AUDIO_FRAME_BYTES,
   MAX_CONTROL_MESSAGE_BYTES,
   TTS_SAMPLE_RATE,
+  decodeAudioFrame,
+  encodeAudioFrame,
+  type Direction,
   type ErrorCode,
   type ServerEvent,
 } from "@lct/protocol";
 import { env } from "../config/env";
 import { errorSummary } from "../lib/errors";
 import { logger } from "../lib/logger";
-import { OutgoingPipeline } from "../pipeline/outgoing-pipeline";
+import { TranslationPipeline } from "../pipeline/translation-pipeline";
 import type { Providers } from "../providers";
 import { ProviderError } from "../providers/types";
 import { dailyUsage, sessionSlots, TokenBucket } from "../security/limits";
@@ -64,9 +71,12 @@ class RealtimeConnection {
   /** The user's own voice, from the signed ticket. Never accepted from a client message. */
   private voiceId: string | null = null;
   private authInFlight = false;
-  private pipeline: OutgoingPipeline | null = null;
+  private readonly pipelines: Record<Direction, TranslationPipeline | null> = { out: null, in: null };
+  private readonly buckets: Record<Direction, TokenBucket> = {
+    out: new TokenBucket(AUDIO_RATE_BYTES_PER_SEC, AUDIO_BURST_BYTES),
+    in: new TokenBucket(AUDIO_RATE_BYTES_PER_SEC, AUDIO_BURST_BYTES),
+  };
   private audioBytes = 0;
-  private readonly bucket = new TokenBucket(AUDIO_RATE_BYTES_PER_SEC, AUDIO_BURST_BYTES);
   private rateViolations = 0;
   private closed = false;
   private alive = true;
@@ -104,7 +114,7 @@ class RealtimeConnection {
     socket.on("error", (err) => this.log.warn({ err: err.name }, "socket error"));
   }
 
-  // ---- Incoming ------------------------------------------------------------
+  // ---- Incoming messages ---------------------------------------------------
   private onMessage(data: RawData, isBinary: boolean): void {
     if (this.closed) return;
     const buffer = toBuffer(data);
@@ -140,9 +150,19 @@ class RealtimeConnection {
       case "auth":
         return this.fail("bad_request", "Already authenticated.", CloseCode.badRequest);
       case "session.start":
-        return this.startSession(this.userId);
+        return this.startOutgoing();
       case "session.stop":
-        return this.stopSession();
+        this.stopPipeline("out");
+        this.stopPipeline("in");
+        clearTimeout(this.sessionTimer);
+        this.sessionTimer = undefined;
+        return;
+      case "incoming.start":
+        return this.startIncoming(message.speakUrdu);
+      case "incoming.stop":
+        this.stopPipeline("in");
+        this.send({ type: "incoming.stopped" });
+        return;
       case "client.metrics":
         // Numbers only: the browser-measured delay until translated audio was audible.
         this.log.info({ segmentId: message.segmentId, playbackDelayMs: Math.round(message.playbackDelayMs) }, "client playback delay");
@@ -176,32 +196,69 @@ class RealtimeConnection {
       sessionId: this.id,
       vadSilenceMs: Math.round(env.VAD_SILENCE_SECS * 1000),
       ttsSampleRate: TTS_SAMPLE_RATE,
+      urduVoiceAvailable: Boolean(env.INCOMING_VOICE_ID) || env.INCOMING_TTS_PROVIDER === "mock",
     });
   }
 
-  private async startSession(userId: string): Promise<void> {
-    if (this.pipeline) return;
-    if (this.remainingQuotaMs(userId) <= 0) return this.fail("quota_exceeded", QUOTA_MESSAGE, CloseCode.quotaExceeded);
-
+  // ---- Directions ----------------------------------------------------------
+  /** You speak Urdu → the client hears English in your own voice. */
+  private async startOutgoing(): Promise<void> {
+    if (this.pipelines.out) return;
     // The voice comes from the signed ticket, which the web app filled from its database.
     const voiceId = this.voiceId;
     if (!voiceId) {
       return this.fail("voice_required", "Record your voice before your first call.", CloseCode.voiceRequired);
     }
-
-    const pipeline = new OutgoingPipeline({
-      providers: this.providers,
-      voiceId,
+    const started = await this.startPipeline("out", {
+      source: "ur",
+      target: "en",
+      speech: { tts: this.providers.tts, voiceId },
       vadSilenceMs: Math.round(env.VAD_SILENCE_SECS * 1000),
       secondaryLanguages: env.STT_SECONDARY_LANGUAGES,
+    });
+    if (started) this.send({ type: "session.started" });
+  }
+
+  /** The client speaks English → you get Urdu subtitles, and Urdu speech if asked for. */
+  private async startIncoming(speakUrdu: boolean): Promise<void> {
+    if (this.pipelines.in) return;
+    const urduVoice = env.INCOMING_VOICE_ID ?? (env.INCOMING_TTS_PROVIDER === "mock" ? "mock-urdu-voice" : null);
+    // A stock voice reads the client's words to you. Never a clone of the client: no consent for that.
+    const speech = speakUrdu && urduVoice ? { tts: this.providers.incomingTts, voiceId: urduVoice } : null;
+    const started = await this.startPipeline("in", {
+      source: "en",
+      target: "ur",
+      speech,
+      vadSilenceMs: Math.round(env.INCOMING_VAD_SILENCE_SECS * 1000),
+      secondaryLanguages: [],
+    });
+    if (started) this.send({ type: "incoming.started", speakUrdu: speech !== null });
+  }
+
+  private async startPipeline(
+    dir: Direction,
+    o: Pick<ConstructorParameters<typeof TranslationPipeline>[0], "source" | "target" | "speech" | "vadSilenceMs" | "secondaryLanguages">,
+  ): Promise<boolean> {
+    const userId = this.userId;
+    if (!userId) return false;
+    if (this.remainingQuotaMs(userId) <= 0) {
+      this.fail("quota_exceeded", QUOTA_MESSAGE, CloseCode.quotaExceeded);
+      return false;
+    }
+
+    const pipeline = new TranslationPipeline({
+      direction: dir,
+      ...o,
+      providers: this.providers,
       glossary: [], // Phase 4: load the user's glossary here (after an ownership check)
       log: this.log,
       emit: (event) => this.send(event),
-      emitAudio: (pcm) => this.sendBinary(pcm),
+      emitAudio: (pcm) => this.sendAudio(dir, pcm),
       onFatal: (error) => this.onProviderFailure(error),
     });
-    this.pipeline = pipeline;
-    this.sessionTimer = setTimeout(
+    this.pipelines[dir] = pipeline;
+    // The session clock starts with the first direction and covers the whole call.
+    this.sessionTimer ??= setTimeout(
       () => this.fail("session_limit", `Sessions are limited to ${env.MAX_SESSION_MINUTES} minutes. Press Start to begin a new one.`, CloseCode.sessionTimeout),
       env.MAX_SESSION_MINUTES * 60_000,
     );
@@ -209,29 +266,33 @@ class RealtimeConnection {
     try {
       await pipeline.start();
     } catch (err) {
-      if (this.pipeline === pipeline) this.onProviderFailure(err);
-      return;
+      if (this.pipelines[dir] === pipeline) this.onProviderFailure(err);
+      return false;
     }
-    if (this.pipeline === pipeline) {
-      this.log.info("session started");
-      this.send({ type: "session.started" });
-    }
+    if (this.pipelines[dir] !== pipeline) return false; // stopped while starting
+    this.log.info({ dir }, "direction started");
+    return true;
   }
 
-  private stopSession(): void {
-    this.pipeline?.stop();
-    this.pipeline = null;
-    clearTimeout(this.sessionTimer);
+  private stopPipeline(dir: Direction): void {
+    this.pipelines[dir]?.stop();
+    this.pipelines[dir] = null;
   }
 
-  private onAudio(pcm: Buffer): void {
+  // ---- Audio -----------------------------------------------------------------
+  private onAudio(frame: Buffer): void {
     if (!this.userId) return this.fail("unauthorized", "Authenticate first.", CloseCode.unauthorized);
-    if (!this.pipeline) return; // audio before session.start or after stop is dropped
 
-    if (pcm.length === 0 || pcm.length % 2 !== 0 || pcm.length > MAX_AUDIO_FRAME_BYTES) {
+    const decoded = decodeAudioFrame(frame);
+    if (!decoded) return this.fail("bad_request", "Invalid audio frame.", CloseCode.badRequest);
+    const { dir, pcm } = decoded;
+    const pipeline = this.pipelines[dir];
+    if (!pipeline) return; // audio for a direction that isn't running is dropped
+
+    if (pcm.length % 2 !== 0 || pcm.length > MAX_AUDIO_FRAME_BYTES) {
       return this.fail("bad_request", "Invalid audio frame.", CloseCode.badRequest);
     }
-    if (!this.bucket.take(pcm.length)) {
+    if (!this.buckets[dir].take(pcm.length)) {
       if (++this.rateViolations > MAX_RATE_VIOLATIONS) {
         this.fail("rate_limited", "Audio is arriving faster than real time.", CloseCode.rateLimited);
       }
@@ -242,7 +303,7 @@ class RealtimeConnection {
     if (this.remainingQuotaMs(this.userId) <= 0) {
       return this.fail("quota_exceeded", QUOTA_MESSAGE, CloseCode.quotaExceeded);
     }
-    this.pipeline.pushAudio(pcm);
+    pipeline.pushAudio(Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength));
   }
 
   // ---- Helpers -------------------------------------------------------------
@@ -266,8 +327,8 @@ class RealtimeConnection {
     if (this.socket.readyState === this.socket.OPEN) this.socket.send(JSON.stringify(event));
   }
 
-  private sendBinary(pcm: Buffer): void {
-    if (this.socket.readyState === this.socket.OPEN) this.socket.send(pcm, { binary: true });
+  private sendAudio(dir: Direction, pcm: Buffer): void {
+    if (this.socket.readyState === this.socket.OPEN) this.socket.send(encodeAudioFrame(dir, pcm), { binary: true });
   }
 
   /** Tell the browser why, close the socket, release everything. */
@@ -285,8 +346,8 @@ class RealtimeConnection {
     clearTimeout(this.authTimer);
     clearInterval(this.heartbeatTimer);
     clearTimeout(this.sessionTimer);
-    this.pipeline?.stop();
-    this.pipeline = null;
+    this.stopPipeline("out");
+    this.stopPipeline("in");
     if (this.userId) {
       dailyUsage.add(this.userId, this.audioBytes / INPUT_BYTES_PER_MS);
       sessionSlots.release(this.userId);

@@ -16,7 +16,10 @@ import type { SttProvider, TranslationProvider, TtsProvider, VoiceCloneProvider 
 export interface Providers {
   stt: SttProvider;
   translation: TranslationProvider;
+  /** Speaks the user's translated English into the call (their own cloned voice). */
   tts: TtsProvider;
+  /** Speaks the client's translated words to the user in Urdu (a stock voice). */
+  incomingTts: TtsProvider;
   voices: VoiceCloneProvider;
 }
 
@@ -55,9 +58,24 @@ function createTts(): TtsProvider {
     case "mock":
       return new MockTts();
     case "elevenlabs":
+    case "elevenlabs-dialogue":
       return new ElevenLabsTts({
         apiKey: required(env.ELEVENLABS_API_KEY, "ELEVENLABS_API_KEY"),
         modelId: env.ELEVENLABS_TTS_MODEL,
+        endpoint: env.TTS_PROVIDER === "elevenlabs-dialogue" ? "dialogue" : "tts",
+      });
+  }
+}
+
+function createIncomingTts(): TtsProvider {
+  switch (env.INCOMING_TTS_PROVIDER) {
+    case "mock":
+      return new MockTts();
+    case "elevenlabs-dialogue":
+      return new ElevenLabsTts({
+        apiKey: required(env.ELEVENLABS_API_KEY, "ELEVENLABS_API_KEY"),
+        modelId: env.INCOMING_TTS_MODEL,
+        endpoint: "dialogue",
       });
   }
 }
@@ -72,5 +90,11 @@ function createVoiceCloner(): VoiceCloneProvider {
 }
 
 export function createProviders(): Providers {
-  return { stt: createStt(), translation: createTranslation(), tts: createTts(), voices: createVoiceCloner() };
+  return {
+    stt: createStt(),
+    translation: createTranslation(),
+    tts: createTts(),
+    incomingTts: createIncomingTts(),
+    voices: createVoiceCloner(),
+  };
 }

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import type { Dict } from "@/lib/i18n/dictionary";
 
 interface Props {
   active: boolean;
@@ -8,10 +9,11 @@ interface Props {
   onStart: () => void;
   onStop: () => void;
   subscribeLevel: (listener: (level: number) => void) => () => void;
+  t: Dict;
 }
 
 /** The one big control. While live, a turquoise ring swells with your voice. */
-export function StartStopButton({ active, connecting, onStart, onStop, subscribeLevel }: Props) {
+export function StartStopButton({ active, connecting, onStart, onStop, subscribeLevel, t }: Props) {
   const ringRef = useRef<HTMLSpanElement>(null);
 
   useEffect(() => {
@@ -39,24 +41,22 @@ export function StartStopButton({ active, connecting, onStart, onStop, subscribe
     };
   }, [active, subscribeLevel]);
 
-  const label = connecting ? "Connecting…" : active ? "Stop" : "Start";
-  const hint = active ? "Tap to end translation" : "Urdu to English";
+  const label = connecting ? t.connecting : active ? t.stop : t.start;
+  const hint = active ? t.stopHint : t.startHint;
 
   return (
     <button
       type="button"
       onClick={active ? onStop : onStart}
       aria-pressed={active}
-      aria-label={active ? "Stop translating" : "Start translating"}
+      aria-label={active ? t.stopAria : t.startAria}
       className={[
         "relative grid size-44 place-items-center rounded-full transition-colors",
-        active
-          ? "border-2 border-cobalt bg-surface text-ink"
-          : "bg-cobalt text-cobalt-ink hover:brightness-110",
+        active ? "border-2 border-cobalt bg-surface text-ink" : "bg-cobalt text-cobalt-ink hover:brightness-110",
       ].join(" ")}
     >
       <span ref={ringRef} aria-hidden className="level-ring pointer-events-none absolute -inset-1 rounded-full" />
-      <span className="relative flex flex-col items-center gap-1">
+      <span className="relative flex flex-col items-center gap-1 px-4 text-center">
         <span className="text-3xl font-bold">{label}</span>
         <span className="text-sm opacity-80">{hint}</span>
       </span>

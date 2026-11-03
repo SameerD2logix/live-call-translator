@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 /** Narrow, centred column shared by every sign-in related page. */
 export function AuthShell({ title, intro, children, footer }: { title: string; intro?: ReactNode; children: ReactNode; footer?: ReactNode }) {
   return (
-    <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col justify-center gap-8 px-5 py-12">
+    <main lang="en" dir="ltr" className="mx-auto flex min-h-dvh w-full max-w-md flex-col justify-center gap-8 px-5 py-12">
       <Link href="/" className="self-start font-bold">
         Live Call Translator
       </Link>

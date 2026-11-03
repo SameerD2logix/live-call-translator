@@ -9,7 +9,7 @@ interface PcmPlayerEvents {
 /**
  * Gapless playback of streamed PCM16 chunks.
  * Each chunk is scheduled to start exactly when the previous one ends.
- * Phase 3 routes this to the virtual audio cable with AudioContext.setSinkId().
+ * setOutputDevice() routes it to a specific device, e.g. the virtual audio cable.
  */
 export class PcmPlayer {
   private readonly ctx = new AudioContext({ latencyHint: "interactive" });
@@ -24,6 +24,13 @@ export class PcmPlayer {
 
   resume(): Promise<void> {
     return this.ctx.resume();
+  }
+
+  /** "" = the system default output. Chrome/Edge only (AudioContext.setSinkId). */
+  async setOutputDevice(deviceId: string): Promise<void> {
+    const ctx = this.ctx as AudioContext & { setSinkId?: (id: string) => Promise<void> };
+    if (!ctx.setSinkId) throw new Error("This browser can't choose an audio output");
+    await ctx.setSinkId(deviceId);
   }
 
   beginSegment(segmentId: number, sampleRate: number): void {

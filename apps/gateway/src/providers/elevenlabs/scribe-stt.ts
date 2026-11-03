@@ -46,7 +46,7 @@ export class ElevenLabsScribeStt implements SttProvider {
     // VAD ends a sentence after a pause. Urdu is verb-final, so we only translate COMMITTED
     // sentences; partials are shown on screen but never translated mid-sentence.
     url.searchParams.set("commit_strategy", "vad");
-    url.searchParams.set("vad_silence_threshold_secs", String(this.cfg.vadSilenceSecs));
+    url.searchParams.set("vad_silence_threshold_secs", String(options.vadSilenceSecs ?? this.cfg.vadSilenceSecs));
     url.searchParams.set("language_code", options.language);
     // List parameters are sent as repeated keys. If the handshake is rejected, check the
     // API reference for the expected encoding, or set STT_SECONDARY_LANGUAGES empty.

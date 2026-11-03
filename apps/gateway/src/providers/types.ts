@@ -48,6 +48,8 @@ export interface SttStreamOptions {
   sampleRate: number;
   /** Words to bias recognition toward (glossary). */
   keyterms?: string[];
+  /** Pause that ends a sentence, overriding the provider default (per direction). */
+  vadSilenceSecs?: number;
   handlers: SttHandlers;
 }
 

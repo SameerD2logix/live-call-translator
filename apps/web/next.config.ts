@@ -6,8 +6,8 @@ const securityHeaders = [
   { key: "X-Content-Type-Options", value: "nosniff" },
   { key: "X-Frame-Options", value: "DENY" },
   { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
-  // Only this site may use the microphone; nothing else is needed.
-  { key: "Permissions-Policy", value: "microphone=(self), camera=(), geolocation=(), payment=()" },
+  // Only this site may use the microphone and screen/tab sharing (for the call's audio); nothing else.
+  { key: "Permissions-Policy", value: "microphone=(self), display-capture=(self), camera=(), geolocation=(), payment=()" },
   { key: "Cross-Origin-Opener-Policy", value: "same-origin" },
 ];
 

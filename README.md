@@ -1,9 +1,14 @@
 # Live Call Translator
 
 Speak Urdu on Zoom or Google Meet; your client hears English in your voice.
-This repository is at **Phase 2**: real accounts (email + password, optional two-step sign-in) and a voice onboarding
-that clones your own voice with explicit consent. Phase 1 delivered one-direction translation (Urdu → English) with a live
-transcript and per-stage latency logging.
+This repository is at **Phase 3**: call integration in both directions.
+
+- **Phase 3:** your English reaches Zoom/Meet/Teams through a virtual audio cable (guided setup with a loopback
+  test); your client's English is translated into Urdu subtitles (and optionally an Urdu voice in your headphones);
+  the call and setup screens work in Urdu or English.
+- **Phase 2:** real accounts (email + password, optional two-step sign-in) and a voice onboarding that clones your
+  own voice with explicit consent.
+- **Phase 1:** one-direction translation (Urdu → English) with a live transcript and per-stage latency logging.
 
 ## Architecture
 
@@ -31,6 +36,26 @@ they will run as separate GPU inference services that the gateway calls through 
 and (Phase 2) `VoiceCloneProvider`. `providers/index.ts` is the only file that knows which implementations exist.
 Switching to self-hosted models means adding classes and changing env vars; the pipeline, WebSocket code and browser
 don't change.
+
+### Phase 3: both directions on one call
+
+```
+                          one WebSocket, protocol v2 (every binary frame starts with a channel byte)
+ Your mic ──[1]──► gateway "out": Urdu STT → translate → TTS in YOUR voice ──[1]──► PcmPlayer → virtual cable → Zoom mic
+ Call tab / system sound ──[2]──► gateway "in": English STT → translate → Urdu ──► subtitles (JSON)
+                                                                └─ optional Urdu voice (stock) ──[2]──► your headphones
+```
+
+- **One socket, two directions.** Upstream channel 1 is your mic, channel 2 is the call's audio; downstream
+  channel 1 is your English (sent to the cable with `AudioContext.setSinkId`), channel 2 is the Urdu voice
+  (your default output). Each direction has its own rate limit; both count toward the daily quota.
+- **Capturing the client.** `getDisplayMedia`: a browser tab with "Also share tab audio" (Meet, Zoom web, Teams
+  web; every desktop OS), or the whole screen with system audio for desktop apps (Windows; macOS needs Chrome 141+
+  on macOS 14.2+). `restrictOwnAudio` keeps this page's own sound out of the capture, so nothing is translated twice.
+- **Feedback safety.** Your translated English goes to the cable, not your speakers. If the cable is the system's
+  default microphone (common for WhatsApp Desktop), the app still picks your real microphone.
+- **Urdu voice.** Flash v2.5 has no Urdu, so the Urdu voice uses the Eleven v4 family through ElevenLabs' Text to
+  Dialogue streaming endpoint with a **stock** voice. The client's voice is never cloned.
 
 ### Phase 2: accounts and voices
 
@@ -64,9 +89,9 @@ live-call-translator/
 │  │     ├─ security/               ticket.ts (single-use JWT), limits.ts (slots, quota, token bucket)
 │  │     ├─ services/voices.ts      Server-side voice lookup (Phase 2: per-user clone)
 │  │     ├─ providers/              types.ts, index.ts, elevenlabs/, anthropic/, mock/
-│  │     ├─ pipeline/               outgoing-pipeline.ts: STT → translate → ordered TTS
 │  │     └─ ws/realtime-route.ts    One WebSocket = one call session; all per-connection checks
 │  │     ├─ http/voice-routes.ts    Phase 2: internal create/delete voice API (service-token protected)
+│  │     ├─ pipeline/translation-pipeline.ts  Phase 3: one class for both directions (out: ur→en, in: en→ur)
 │  │  └─ test/pipeline.smoke.ts     Runs the real pipeline on mock providers; validates every event
 │  └─ web/                          Next.js app
 │     ├─ proxy.ts                   Per-request nonce CSP (middleware.ts on Next 15)
@@ -78,6 +103,10 @@ live-call-translator/
 │     ├─ lib/auth.ts                Better Auth config: Argon2id, verification, 2FA, breach check, rate limits
 │     ├─ lib/voice/                 consent text, reading script, repository (SQL), gateway admin client
 │     ├─ lib/audio/sample-recorder.ts  MediaRecorder takes with level/clipping checks
+│     ├─ lib/audio/{devices,call-capture,cable-test}.ts  Phase 3: cable detection, call-audio capture, loopback test
+│     ├─ lib/i18n/                  Phase 3: English/Urdu dictionary, language cookie
+│     ├─ app/setup/                 Phase 3: virtual-cable setup wizard
+│     ├─ components/{call,setup,i18n}/  subtitles, output picker, incoming controls, wizard, language toggle
 │     ├─ db/migrations/             Our SQL (voice_profile, voice_consent); scripts/migrate.mjs runs everything
 │     ├─ lib/audio/                 mic-capture.ts, pcm-player.ts
 │     ├─ lib/realtime/              gateway-client.ts
@@ -87,6 +116,7 @@ live-call-translator/
 │     ├─ components/{auth,onboarding,settings,ui}/
 │     └─ types/css.d.ts             Lets TypeScript accept global CSS imports
 ├─ docker-compose.yml               Local Postgres (bound to 127.0.0.1)
+├─ docs/call-app-testing.md         Phase 3: manual test matrix for Zoom, Meet, Teams, WhatsApp
 └─ .github/                         CI (lint, typecheck, smoke test, build, audit) and Dependabot
 ```
 
@@ -114,14 +144,18 @@ Then create the tables: `pnpm --filter @lct/web db:migrate` (Better Auth's table
 **0. Smoke test (10 seconds, no keys).** `pnpm --filter @lct/gateway smoke` runs the real pipeline on mock
 providers and checks every event against the shared protocol.
 
-**1. Mock mode first (no keys, no cost).** In `apps/gateway/.env` set all four providers to `mock`
-(`STT_PROVIDER`, `TRANSLATION_PROVIDER`, `TTS_PROVIDER`, `VOICE_CLONE_PROVIDER`). Run `pnpm dev` and open
-http://localhost:3000:
+**1. Mock mode first (no keys, no cost).** In `apps/gateway/.env` set all five providers to `mock`
+(`STT_PROVIDER`, `TRANSLATION_PROVIDER`, `TTS_PROVIDER`, `VOICE_CLONE_PROVIDER`, `INCOMING_TTS_PROVIDER`).
+Run `pnpm dev` and open http://localhost:3000:
 
 1. Create an account. Without `RESEND_API_KEY`, the confirmation link is printed in the terminal running `pnpm dev`.
 2. Record at least 10 sentences (any speech works in mock mode), tick the consent box, create the voice.
 3. On the call screen, press Start, talk for two seconds, then pause: a fixed Urdu sentence, its translation and a tone.
 4. In Settings, turn on two-step sign-in, sign out, sign back in with a code, then try deleting your voice.
+5. Open /setup and follow the cable wizard (install VB-CABLE or BlackHole first), then on the call screen press
+   Start and "Share the call tab" on any tab playing speech: mock subtitles appear.
+
+**Testing with a real call:** follow `docs/call-app-testing.md`.
 
 **2. Real providers.** Set the providers back to `elevenlabs` / `anthropic` and add `ELEVENLABS_API_KEY` (with voice
 cloning permission) and `ANTHROPIC_API_KEY`. Delete your mock voice in Settings and record a real one.
@@ -177,6 +211,12 @@ Tuning: lowering `VAD_SILENCE_SECS` cuts delay but splits sentences more often. 
 | Voice data | No recordings stored; pseudonymous name at the provider (hash of user id, no email) |
 | Server-to-server | Separate `INTERNAL_API_SECRET`; 60 s single-use tokens scoped to one action; delete tokens bound to one voice id |
 | Deletion | "Delete my voice" removes it at the provider, then here; deleting the account deletes the voice first and aborts if that fails, so no clone is orphaned |
+| **Phase 3** | |
+| Screen/tab sharing | Only after an explicit browser prompt; this tab is excluded from the picker; only the audio is used (a 1 fps video track is required by browsers and ignored); `display-capture=(self)` in Permissions-Policy |
+| Client's privacy | The client's speech is processed like yours: never stored or logged; never used to clone a voice; the Urdu voice is a stock voice |
+| Audio channels | Every binary frame must carry a valid channel byte; per-direction rate limits; frames for a direction that isn't running are dropped |
+| Loopback safety | Real-mic selection skips virtual cables; `restrictOwnAudio` on system-audio capture; your English never plays on speakers unless you turn on the monitor |
+| Device data | Only the chosen output's per-site device id and label, in localStorage on that computer |
 
 ### Known gaps, tracked for later phases
 
@@ -195,8 +235,12 @@ Tuning: lowering `VAD_SILENCE_SECS` cuts delay but splits sentences more often. 
   settings (Scribe has an `enable_logging` option; zero-retention may need a higher plan) and disclose them in your privacy policy.
 - **No auto-reconnect** if the speech service drops mid-call; the user presses Start again.
 - **Stop discards the sentence in progress.** A later version should commit it and finish speaking before closing.
-- **The interface is English-only.** Urdu text (transcripts, the reading script, the consent statement) renders
-  right-to-left in Nastaliq; the full Urdu/English UI toggle comes in Phase 3 with the audio-cable wizard.
+- **Partly translated interface.** The call screen and the cable wizard are in Urdu and English; sign-in, voice
+  recording and settings pages are still English (they stay left-to-right when Urdu is chosen).
+- **Push-to-talk isn't built.** A web page only receives keys while focused, and during a call Zoom has focus;
+  real push-to-talk needs a global hotkey (browser extension or desktop helper).
+- **Real calls haven't been tested yet.** Fill in `docs/call-app-testing.md`; menu names in the wizard's per-app
+  steps (especially WhatsApp Desktop) should be checked against current app versions and screenshots added.
 - CSP allows inline styles (`style-src 'unsafe-inline'`), required by React style attributes; scripts remain nonce-only.
 - Pin GitHub Actions to commit SHAs.
 
@@ -231,8 +275,10 @@ Verified in the Scribe v2 Realtime API reference and event reference:
 - Scribe closes a session after 15 s with no client messages. The worklet keeps sending silence while you're muted,
   so a muted mic doesn't drop the call (that silence is still billed audio).
 - `enable_logging=false` (zero retention) is enterprise-only, so assume ElevenLabs keeps logs on other plans.
-- TTS: `eleven_flash_v2_5` is still the lowest-latency model. `eleven_v4_turbo` (released 28 Sep 2026) is more
-  expressive at roughly 100 ms; voice clones made before v4 must be retrained for it. Try both in Phase 2.
+- TTS: `eleven_flash_v2_5` is still the lowest-latency model (32 languages, no Urdu). `eleven_v4_turbo` (released
+  28 Sep 2026) is more expressive at roughly 100 ms and speaks Urdu, but the v4 family is served through **Text to
+  Dialogue**, not the plain TTS endpoint: use `TTS_PROVIDER=elevenlabs-dialogue` to try it for your English, and
+  it's the default for the incoming Urdu voice. Clones made before v4 must be retrained for it.
 
 Still to test live in Phase 0:
 
@@ -241,8 +287,8 @@ Still to test live in Phase 0:
 - Urdu accuracy with English words mixed in, with and without `language_code=ur`.
 - The best `VAD_SILENCE_SECS` for long Urdu sentences (try 0.5–0.8).
 
-## Next: Phase 3
+## Next: Phase 4
 
-Call integration: a guided virtual-audio-cable wizard (VB-Audio Cable on Windows, BlackHole on Mac) with output device
-selection (`AudioContext.setSinkId`), the incoming direction (client's English → Urdu subtitles from tab audio), the
-Urdu/English interface toggle, and testing on Zoom, Google Meet, Microsoft Teams and WhatsApp desktop.
+Accuracy: a per-user glossary (terms kept unchanged; also sent to Scribe as keyterms), stronger noise suppression and
+VAD tuning, a correction button to retype or repeat a mistranslated sentence, smarter handling of Urdu's verb-final
+sentences, and the recording liveness check (each sample must match its prompted sentence).

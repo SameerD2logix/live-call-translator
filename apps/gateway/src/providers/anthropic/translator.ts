@@ -62,9 +62,11 @@ function buildSystemPrompt({ source, target, glossary }: TranslationRequest): st
   const to = LANGUAGE_NAMES[target];
   const terms = glossary?.length ? glossary.map((term) => `- ${sanitize(term)}`).join("\n") : "(none)";
 
+  // "ur" source: the Pakistani freelancer is speaking. "en" source: their client is speaking.
+  const speaker = source === "ur" ? "the freelancer" : "the client";
   const rules = [
-    `You are a live interpreter on a business video call between a freelancer and a client.`,
-    `Translate the speaker's latest ${from} utterance into natural spoken ${to}.`,
+    `You are a live interpreter on a business video call between a Pakistani freelancer and an English-speaking client.`,
+    `The speaker is ${speaker}. Translate their latest ${from} utterance into natural spoken ${to}.`,
     ``,
     `Rules:`,
     `- Reply with the translation only. No quotes, notes, labels or alternatives.`,
@@ -79,6 +81,13 @@ function buildSystemPrompt({ source, target, glossary }: TranslationRequest): st
     rules.push(
       `- Urdu speakers often use English words, sometimes written in Urdu script (for example ڈیڈ لائن is "deadline"). Use the English word.`,
       `- Urdu puts the verb at the end, so an utterance may be an incomplete clause. Translate only what was said; do not invent the rest.`,
+    );
+  }
+  if (target === "ur") {
+    rules.push(
+      `- Write in Urdu script, in the simple everyday Urdu a Pakistani professional uses, not formal literary Urdu.`,
+      `- Keep names, numbers, prices, dates, URLs and technical or business terms (for example API, WordPress, invoice, deadline) in English letters.`,
+      `- The output is read as a live subtitle: keep it short and clear.`,
     );
   }
   return rules.join("\n");
