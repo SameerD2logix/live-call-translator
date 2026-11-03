@@ -4,12 +4,16 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Button, Notice } from "@/components/ui/form";
+import { accountText } from "@/lib/i18n/account";
+import type { Lang } from "@/lib/i18n/dictionary";
 
 interface Props {
   voice: { createdAt: string; readingLanguage: "en" | "ur"; sampleSeconds: number } | null;
+  lang: Lang;
 }
 
-export function VoiceSettings({ voice }: Props) {
+export function VoiceSettings({ voice, lang }: Props) {
+  const a = accountText[lang];
   const router = useRouter();
   const [confirming, setConfirming] = useState(false);
   const [pending, setPending] = useState(false);
@@ -21,7 +25,7 @@ export function VoiceSettings({ voice }: Props) {
     const res = await fetch("/api/voice", { method: "DELETE" }).catch(() => null);
     setPending(false);
     if (!res || (!res.ok && res.status !== 204)) {
-      setError("Couldn't delete your voice right now. Nothing was removed; try again in a minute.");
+      setError(a.deleteVoiceFailed);
       return;
     }
     setConfirming(false);
@@ -31,40 +35,42 @@ export function VoiceSettings({ voice }: Props) {
   return (
     <section aria-labelledby="voice" className="space-y-4">
       <h2 id="voice" className="text-xl font-bold">
-        Your voice
+        {a.voiceTitle}
       </h2>
       {voice ? (
         <>
           <p className="text-muted">
-            Created on {new Date(voice.createdAt).toLocaleDateString()} from {voice.sampleSeconds} seconds of{" "}
-            {voice.readingLanguage === "en" ? "English" : "Urdu"}. Only your own calls can use it.
+            {a.voiceCreated(
+              new Date(voice.createdAt).toLocaleDateString(lang === "ur" ? "ur-PK" : "en-GB"),
+              voice.sampleSeconds,
+              voice.readingLanguage === "en",
+            )}
           </p>
           {confirming ? (
             <div className="space-y-3">
               <Notice tone="error">
-                Delete your voice? It&apos;s removed from our voice provider too, and you&apos;ll need to record again before your
-                next call.
+                {a.deleteVoiceConfirm}
               </Notice>
               <div className="flex gap-3">
                 <Button variant="danger" onClick={() => void deleteVoice()} disabled={pending}>
-                  {pending ? "Deleting…" : "Delete my voice"}
+                  {pending ? a.deleting : a.deleteVoice}
                 </Button>
                 <Button variant="secondary" onClick={() => setConfirming(false)} disabled={pending}>
-                  Keep it
+                  {a.keepVoice}
                 </Button>
               </div>
             </div>
           ) : (
             <Button variant="danger" onClick={() => setConfirming(true)}>
-              Delete my voice
+              {a.deleteVoice}
             </Button>
           )}
         </>
       ) : (
         <p>
-          You haven&apos;t recorded your voice yet.{" "}
+          {a.noVoiceYet}{" "}
           <Link href="/onboarding" className="font-bold underline underline-offset-4">
-            Record it now
+            {a.recordNow}
           </Link>
         </p>
       )}

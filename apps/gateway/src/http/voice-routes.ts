@@ -57,7 +57,9 @@ export async function registerVoiceRoutes(app: FastifyInstance, providers: Provi
         let userId: string;
         try {
           ({ userId } = await verifyInternalToken(request.headers.authorization, "voice:clone"));
-        } catch {
+        } catch (err) {
+          // A security event worth alerting on if it repeats: someone calling the internal API without a valid token.
+          request.log.warn({ err: errorSummary(err), route: "voice:clone" }, "internal token rejected");
           return reply.code(401).send({ error: "unauthorized" });
         }
 
@@ -150,11 +152,15 @@ export async function registerVoiceRoutes(app: FastifyInstance, providers: Provi
         let claims: { voiceId: string | null };
         try {
           claims = await verifyInternalToken(request.headers.authorization, "voice:delete");
-        } catch {
+        } catch (err) {
+          request.log.warn({ err: errorSummary(err), route: "voice:delete" }, "internal token rejected");
           return reply.code(401).send({ error: "unauthorized" });
         }
         // The token names the exact voice it may delete; the URL must match it.
-        if (claims.voiceId !== voiceId.data) return reply.code(403).send({ error: "forbidden" });
+        if (claims.voiceId !== voiceId.data) {
+          request.log.warn({ route: "voice:delete" }, "service token used for a different voice");
+          return reply.code(403).send({ error: "forbidden" });
+        }
 
         try {
           await providers.voices.delete(voiceId.data, AbortSignal.timeout(CLONE_TIMEOUT_MS));

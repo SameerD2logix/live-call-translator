@@ -15,6 +15,8 @@ import type { TicketResponse } from "@lct/protocol";
 import { getCurrentUser } from "@/lib/auth/session";
 import { serverEnv } from "@/lib/env.server";
 import { listGlossary } from "@/lib/glossary/repository";
+import { allow } from "@/lib/rate-limit";
+import { securityEvent } from "@/lib/security-log";
 import { getVoiceProfile } from "@/lib/voice/repository";
 
 export const runtime = "nodejs";
@@ -28,12 +30,17 @@ export async function POST(request: Request) {
 
   // CSRF defence: only pages on our own origin may mint tickets.
   if (request.headers.get("origin") !== env.APP_ORIGIN) {
+    securityEvent("origin_rejected", { route: "ticket" });
     return NextResponse.json({ error: "forbidden" }, { status: 403, headers: NO_STORE });
   }
 
   const user = await getCurrentUser();
   if (!user) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401, headers: NO_STORE });
+  }
+  // A real user presses Start a few times a minute at most.
+  if (!(await allow(`ticket:${user.id}`, 20, 60, "ticket"))) {
+    return NextResponse.json({ error: "rate_limited" }, { status: 429, headers: NO_STORE });
   }
 
   const voice = await getVoiceProfile(user.id);

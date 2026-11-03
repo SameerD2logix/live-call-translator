@@ -1,13 +1,30 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
+import { LanguageToggle } from "@/components/i18n/LanguageToggle";
+import { dictionaries, type Lang } from "@/lib/i18n/dictionary";
 
 /** Narrow, centred column shared by every sign-in related page. */
-export function AuthShell({ title, intro, children, footer }: { title: string; intro?: ReactNode; children: ReactNode; footer?: ReactNode }) {
+export function AuthShell({
+  lang,
+  title,
+  intro,
+  children,
+  footer,
+}: {
+  lang: Lang;
+  title: string;
+  intro?: ReactNode;
+  children: ReactNode;
+  footer?: ReactNode;
+}) {
   return (
-    <main lang="en" dir="ltr" className="mx-auto flex min-h-dvh w-full max-w-md flex-col justify-center gap-8 px-5 py-12">
-      <Link href="/" className="self-start font-bold">
-        Live Call Translator
-      </Link>
+    <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col justify-center gap-8 px-5 py-12">
+      <div className="flex items-center justify-between gap-4">
+        <Link href="/" className="font-bold">
+          {dictionaries[lang].appName}
+        </Link>
+        <LanguageToggle lang={lang} />
+      </div>
       <header className="space-y-2">
         <h1 className="text-3xl font-bold">{title}</h1>
         {intro && <div className="text-muted">{intro}</div>}

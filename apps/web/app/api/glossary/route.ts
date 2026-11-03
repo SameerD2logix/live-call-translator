@@ -10,6 +10,8 @@ import { GlossaryTerm } from "@lct/protocol";
 import { getCurrentUser } from "@/lib/auth/session";
 import { serverEnv } from "@/lib/env.server";
 import { addGlossaryTerm, listGlossary, removeGlossaryTerm } from "@/lib/glossary/repository";
+import { allow } from "@/lib/rate-limit";
+import { securityEvent } from "@/lib/security-log";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -23,9 +25,15 @@ type Auth = { ok: true; userId: string } | { ok: false; response: NextResponse }
 
 /** Signed-in user, plus a same-origin check (CSRF) for anything that changes data. */
 async function authorize(request: Request, mutating: boolean): Promise<Auth> {
-  if (mutating && request.headers.get("origin") !== serverEnv().APP_ORIGIN) return { ok: false, response: fail(403, "forbidden") };
+  if (mutating && request.headers.get("origin") !== serverEnv().APP_ORIGIN) {
+    securityEvent("origin_rejected", { route: "glossary" });
+    return { ok: false, response: fail(403, "forbidden") };
+  }
   const user = await getCurrentUser();
   if (!user) return { ok: false, response: fail(401, "unauthorized") };
+  if (mutating && !(await allow(`glossary:${user.id}`, 30, 60, "glossary"))) {
+    return { ok: false, response: fail(429, "rate_limited") };
+  }
   return { ok: true, userId: user.id };
 }
 

@@ -48,7 +48,7 @@ export function proxy(request: NextRequest) {
     "font-src 'self'",
     `connect-src 'self'${gateway ? ` ${gateway}` : ""}${isDev ? " ws://localhost:* ws://127.0.0.1:*" : ""}`,
     "media-src 'self' blob:",
-    "worker-src 'self' blob:",
+    "worker-src 'self'", // the AudioWorklet is a same-origin file
     "object-src 'none'",
     "base-uri 'self'",
     "form-action 'self'",

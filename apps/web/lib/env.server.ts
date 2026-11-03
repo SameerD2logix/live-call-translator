@@ -44,7 +44,9 @@ let cached: ServerEnv | null = null;
 
 export function serverEnv(): ServerEnv {
   if (!cached) {
-    const parsed = ServerEnv.safeParse(process.env);
+    // "NAME=" (empty) in .env.local means "not set".
+    const defined = Object.fromEntries(Object.entries(process.env).filter(([, value]) => value !== ""));
+    const parsed = ServerEnv.safeParse(defined);
     if (!parsed.success) {
       const problems = parsed.error.issues.map((i) => `${i.path.join(".")} (${i.message})`).join(", ");
       throw new Error(`Invalid server environment: ${problems}`);

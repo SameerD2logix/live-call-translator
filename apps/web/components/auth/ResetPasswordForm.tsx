@@ -5,8 +5,11 @@ import { useState, type FormEvent } from "react";
 import { Button, Field, Notice } from "@/components/ui/form";
 import { authClient } from "@/lib/auth-client";
 import { authErrorMessage } from "@/lib/auth-errors";
+import type { Lang } from "@/lib/i18n/dictionary";
+import { accountText } from "@/lib/i18n/account";
 
-export function ResetPasswordForm({ token }: { token: string | null }) {
+export function ResetPasswordForm({ token, lang }: { token: string | null; lang: Lang }) {
+  const a = accountText[lang];
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
@@ -14,11 +17,10 @@ export function ResetPasswordForm({ token }: { token: string | null }) {
   if (!token) {
     return (
       <Notice tone="error">
-        This reset link is missing or has expired.{" "}
+        {a.linkMissing}{" "}
         <Link href="/forgot-password" className="underline underline-offset-4">
-          Request a new one
+          {a.requestNew}
         </Link>
-        .
       </Notice>
     );
   }
@@ -29,14 +31,14 @@ export function ResetPasswordForm({ token }: { token: string | null }) {
     const form = new FormData(event.currentTarget);
     const newPassword = String(form.get("password"));
     if (newPassword !== String(form.get("confirm"))) {
-      setError("The two passwords don't match.");
+      setError(a.passwordsDiffer);
       return;
     }
     setPending(true);
     const { error } = await authClient.resetPassword({ newPassword, token: token! });
     setPending(false);
     if (error) {
-      setError(authErrorMessage(error, "Couldn't reset your password. Request a new link and try again."));
+      setError(authErrorMessage(error, a.resetFailed, a));
       return;
     }
     setDone(true);
@@ -45,9 +47,9 @@ export function ResetPasswordForm({ token }: { token: string | null }) {
   if (done) {
     return (
       <Notice tone="success">
-        Password changed, and you&apos;ve been signed out everywhere.{" "}
+        {a.passwordChanged}{" "}
         <Link href="/sign-in" className="font-bold underline underline-offset-4">
-          Sign in
+          {a.signIn}
         </Link>
       </Notice>
     );
@@ -59,17 +61,18 @@ export function ResetPasswordForm({ token }: { token: string | null }) {
         id="password"
         name="password"
         type="password"
-        label="New password"
+        label={a.newPassword}
         autoComplete="new-password"
+        dir="ltr"
         required
         minLength={12}
         maxLength={128}
-        hint="At least 12 characters."
+        hint={a.newPasswordHint}
       />
-      <Field id="confirm" name="confirm" type="password" label="Repeat new password" autoComplete="new-password" required maxLength={128} />
+      <Field id="confirm" name="confirm" type="password" label={a.repeatNewPassword} autoComplete="new-password" dir="ltr" required maxLength={128} />
       {error && <Notice tone="error">{error}</Notice>}
       <Button type="submit" disabled={pending} className="w-full">
-        {pending ? "Saving…" : "Save new password"}
+        {pending ? a.saving : a.savePassword}
       </Button>
     </form>
   );

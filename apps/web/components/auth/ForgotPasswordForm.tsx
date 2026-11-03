@@ -3,8 +3,11 @@
 import { useState, type FormEvent } from "react";
 import { Button, Field, Notice } from "@/components/ui/form";
 import { authClient } from "@/lib/auth-client";
+import type { Lang } from "@/lib/i18n/dictionary";
+import { accountText } from "@/lib/i18n/account";
 
-export function ForgotPasswordForm() {
+export function ForgotPasswordForm({ lang }: { lang: Lang }) {
+  const a = accountText[lang];
   const [pending, setPending] = useState(false);
   const [done, setDone] = useState(false);
 
@@ -23,17 +26,15 @@ export function ForgotPasswordForm() {
 
   if (done) {
     return (
-      <Notice tone="success">
-        If an account exists for that email, we&apos;ve sent a reset link. It expires in 30 minutes.
-      </Notice>
+      <Notice tone="success">{a.linkSent}</Notice>
     );
   }
 
   return (
     <form onSubmit={onSubmit} className="space-y-5">
-      <Field id="email" name="email" type="email" label="Email" autoComplete="email" required maxLength={254} />
+      <Field id="email" name="email" type="email" label={a.email} autoComplete="email" dir="ltr" required maxLength={254} />
       <Button type="submit" disabled={pending} className="w-full">
-        {pending ? "Sending…" : "Send reset link"}
+        {pending ? a.sending : a.sendLink}
       </Button>
     </form>
   );

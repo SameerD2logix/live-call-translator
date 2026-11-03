@@ -3,42 +3,52 @@
 /**
  * Voice onboarding: read short sentences aloud, review the takes, give explicit consent,
  * then create the clone. Recordings exist only in this tab's memory until upload, and the
- * servers drop them as soon as the clone is created.
+ * servers drop them as soon as the clone is created. Each take is sent with the number of
+ * the sentence it reads, so the server can check the recordings match our script.
  */
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { VOICE_SAMPLE_LIMITS as L } from "@lct/protocol";
 import { Button, Notice } from "@/components/ui/form";
 import { checkClip, SampleRecorder, type Clip, type ClipProblem } from "@/lib/audio/sample-recorder";
+import { accountText, type AccountDict } from "@/lib/i18n/account";
+import type { Lang } from "@/lib/i18n/dictionary";
 import { CONSENT_STATEMENT, CONSENT_VERSION } from "@/lib/voice/consent";
 import { VOICE_SCRIPT } from "@/lib/voice/script";
 
 type Stage = "intro" | "record" | "review" | "uploading";
-type Lang = "en" | "ur";
+type ReadLang = "en" | "ur";
 
-const PROBLEM_TEXT: Record<ClipProblem, string> = {
-  too_short: "That take was very short. Read the whole sentence, then press Stop.",
-  too_quiet: "That was too quiet. Move a little closer to the microphone and record again.",
-  clipping: "That was loud enough to crackle. Move back a little and record again, or keep it if it sounds fine.",
-};
+const problemText = (a: AccountDict, problem: ClipProblem) =>
+  problem === "too_short" ? a.rec_tooShort : problem === "too_quiet" ? a.rec_tooQuiet : a.rec_clipping;
 
-const UPLOAD_ERRORS: Record<string, string> = {
-  voice_exists: "You already have a voice. Delete it in Settings before recording a new one.",
-  too_many_attempts: "You've tried several times today. Try again tomorrow.",
-  invalid_audio: "The voice service couldn't use these recordings. Try recording somewhere quieter.",
-  provider_unavailable: "The voice service isn't responding. Your recordings are still here, so try again in a minute.",
-  unauthorized: "Your sign-in expired. Sign in again, then record again.",
-  script_mismatch:
-    "Some recordings don't match their sentences. Listen back, re-record the ones that sound off, and read each sentence as shown.",
-};
+function uploadError(a: AccountDict, code: string | undefined): string {
+  switch (code) {
+    case "voice_exists":
+      return a.up_voice_exists;
+    case "too_many_attempts":
+      return a.up_too_many_attempts;
+    case "invalid_audio":
+      return a.up_invalid_audio;
+    case "provider_unavailable":
+      return a.up_provider_unavailable;
+    case "unauthorized":
+      return a.up_unauthorized;
+    case "script_mismatch":
+      return a.up_script_mismatch;
+    default:
+      return a.up_generic;
+  }
+}
 
 const usable = (clip: Clip | null, problem: ClipProblem | null): clip is Clip =>
   clip !== null && problem !== "too_short" && problem !== "too_quiet";
 
-export function VoiceRecorder() {
+export function VoiceRecorder({ lang: uiLang }: { lang: Lang }) {
+  const a = accountText[uiLang];
   const router = useRouter();
   const [stage, setStage] = useState<Stage>("intro");
-  const [lang, setLang] = useState<Lang>("en");
+  const [lang, setLang] = useState<ReadLang>("en");
   const [index, setIndex] = useState(0);
   const [clips, setClips] = useState<(Clip | null)[]>(() => VOICE_SCRIPT.map(() => null));
   const [problems, setProblems] = useState<(ClipProblem | null)[]>(() => VOICE_SCRIPT.map(() => null));
@@ -67,7 +77,7 @@ export function VoiceRecorder() {
   const totalSeconds = good.reduce((sum, clip) => sum + Math.min(clip.seconds, L.maxSampleSeconds), 0);
   const enough = good.length >= L.minSamples && totalSeconds >= L.minTotalSeconds;
   const line = VOICE_SCRIPT[index]!;
-  const other: Lang = lang === "en" ? "ur" : "en";
+  const other: ReadLang = lang === "en" ? "ur" : "en";
 
   async function begin() {
     setError(null);
@@ -75,13 +85,7 @@ export function VoiceRecorder() {
       recorderRef.current = await SampleRecorder.open();
       setStage("record");
     } catch (err) {
-      setError(
-        err instanceof DOMException && err.name === "NotAllowedError"
-          ? "Microphone access is blocked. Allow it from the icon in the address bar, then try again."
-          : err instanceof Error
-            ? err.message
-            : "Couldn't open the microphone.",
-      );
+      setError(err instanceof DOMException && err.name === "NotAllowedError" ? a.micBlocked : a.micFailed);
     }
   }
 
@@ -104,7 +108,7 @@ export function VoiceRecorder() {
       setClips((prev) => prev.map((c, i) => (i === at ? clip : c)));
       setProblems((prev) => prev.map((p, i) => (i === at ? checkClip(clip) : p)));
     } catch {
-      setError("Recording stopped unexpectedly. Check your microphone and try again.");
+      setError(a.recordingFailed);
     } finally {
       setRecording(false);
     }
@@ -137,7 +141,7 @@ export function VoiceRecorder() {
       return;
     }
     const body = (await res?.json().catch(() => null)) as { error?: string } | null;
-    setError(UPLOAD_ERRORS[body?.error ?? ""] ?? "Couldn't create your voice. Try again.");
+    setError(uploadError(a, body?.error));
     setStage("review");
   }
 
@@ -146,24 +150,21 @@ export function VoiceRecorder() {
     return (
       <section className="space-y-6">
         <div className="space-y-3">
-          <h2 className="text-2xl font-bold">Record your voice</h2>
-          <p>
-            Read {L.minSamples}–{VOICE_SCRIPT.length} short sentences out loud, about 1–2 minutes in total. Your client
-            will hear your translated English in this voice.
-          </p>
+          <h2 className="text-2xl font-bold">{a.recordTitle}</h2>
+          <p>{a.recordIntro(L.minSamples, VOICE_SCRIPT.length)}</p>
           <ul className="list-disc space-y-1 ps-5 text-muted">
-            <li>Choose a quiet room. Curtains, a bed or a sofa nearby reduce echo.</li>
-            <li>Keep the microphone about a hand&apos;s width from your mouth.</li>
-            <li>Speak the way you do on calls: relaxed and steady.</li>
+            {a.tips.map((tip) => (
+              <li key={tip}>{tip}</li>
+            ))}
           </ul>
         </div>
 
         <fieldset className="space-y-3">
-          <legend className="font-bold">Which language do you want to read?</legend>
+          <legend className="font-bold">{a.readingQuestion}</legend>
           {(
             [
-              ["en", "English", "Recommended: your clone will speak English."],
-              ["ur", "اردو", "Fine too. The clone learns your voice, not the words."],
+              ["en", "English", a.readEnglishHint],
+              ["ur", "اردو", a.readUrduHint],
             ] as const
           ).map(([value, label, hint]) => (
             <label key={value} className="flex items-start gap-3 rounded-xl border border-line bg-surface p-4">
@@ -178,12 +179,9 @@ export function VoiceRecorder() {
           ))}
         </fieldset>
 
-        <p className="text-sm text-muted">
-          Your recordings are sent once to our voice provider to create the voice, then deleted. We keep only an id
-          for the voice, and you can delete it at any time.
-        </p>
+        <p className="text-sm text-muted">{a.recordingPrivacy}</p>
         {error && <Notice tone="error">{error}</Notice>}
-        <Button onClick={() => void begin()}>Turn on microphone and start</Button>
+        <Button onClick={() => void begin()}>{a.startMic}</Button>
       </section>
     );
   }
@@ -194,21 +192,15 @@ export function VoiceRecorder() {
     return (
       <section className="space-y-6">
         <div className="space-y-2">
-          <h2 className="text-2xl font-bold">Check and confirm</h2>
-          <p className="text-muted">
-            {good.length} recordings, {Math.round(totalSeconds)} seconds in total.
-          </p>
+          <h2 className="text-2xl font-bold">{a.reviewTitle}</h2>
+          <p className="text-muted">{a.reviewSummary(good.length, Math.round(totalSeconds))}</p>
         </div>
 
-        {!enough && (
-          <Notice tone="error">
-            Record at least {L.minSamples} sentences and {L.minTotalSeconds} seconds in total before creating your voice.
-          </Notice>
-        )}
+        {!enough && <Notice tone="error">{a.notEnough(L.minSamples, L.minTotalSeconds)}</Notice>}
 
         <details className="rounded-xl border border-line bg-surface p-4">
-          <summary className="cursor-pointer font-bold">Listen back or save copies</summary>
-          <p className="mt-2 text-sm text-muted">We don&apos;t keep your recordings. Save any you want to keep now.</p>
+          <summary className="cursor-pointer font-bold">{a.listenBack}</summary>
+          <p className="mt-2 text-sm text-muted">{a.notKept}</p>
           <ol className="mt-3 space-y-3">
             {clips.map((clip, i) =>
               usable(clip, problems[i] ?? null) ? (
@@ -216,7 +208,7 @@ export function VoiceRecorder() {
                   <span className="w-6 text-sm text-muted">{i + 1}</span>
                   <audio controls src={clip.url} className="h-9 max-w-full" />
                   <a href={clip.url} download={`my-voice-${i + 1}`} className="text-sm underline underline-offset-4">
-                    Save
+                    {a.saveCopy}
                   </a>
                 </li>
               ) : null,
@@ -224,33 +216,36 @@ export function VoiceRecorder() {
           </ol>
         </details>
 
+        {/* Both language versions of the statement are always shown and both are hashed into the consent record. */}
         <fieldset className="space-y-4 rounded-2xl border border-line bg-surface p-5">
-          <legend className="px-1 font-bold">Your permission</legend>
-          <p>{CONSENT_STATEMENT.en}</p>
+          <legend className="px-1 font-bold">{a.permissionTitle}</legend>
+          <p lang="en" dir="ltr">
+            {CONSENT_STATEMENT.en}
+          </p>
           <p lang="ur" dir="rtl" className="font-urdu text-lg leading-[2.3]">
             {CONSENT_STATEMENT.ur}
           </p>
           <label className="flex items-start gap-3 font-bold">
             <input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} className="mt-1 size-5" />
-            This is my own voice and I allow it to be cloned.
+            {a.consentCheckbox}
           </label>
         </fieldset>
 
         <label className="flex items-start gap-3">
           <input type="checkbox" checked={noisyRoom} onChange={(e) => setNoisyRoom(e.target.checked)} className="mt-1 size-5" />
           <span>
-            My room was noisy
-            <span className="block text-sm text-muted">Removes background noise. Leave off for clean recordings: it can make them sound worse.</span>
+            {a.noisyRoom}
+            <span className="block text-sm text-muted">{a.noisyRoomHint}</span>
           </span>
         </label>
 
         {error && <Notice tone="error">{error}</Notice>}
         <div className="flex flex-wrap gap-3">
           <Button onClick={() => void createVoice()} disabled={!consent || !enough || uploading}>
-            {uploading ? "Creating your voice…" : "Create my voice"}
+            {uploading ? a.creatingVoice : a.createVoice}
           </Button>
           <Button variant="secondary" onClick={() => setStage("record")} disabled={uploading}>
-            Back to recording
+            {a.backToRecording}
           </Button>
         </div>
       </section>
@@ -263,12 +258,8 @@ export function VoiceRecorder() {
   return (
     <section className="space-y-6">
       <div className="flex flex-wrap items-baseline justify-between gap-2 text-sm text-muted">
-        <p>
-          Sentence {index + 1} of {VOICE_SCRIPT.length}
-        </p>
-        <p className="tabular-nums">
-          Recorded: {Math.round(totalSeconds)} s (aim for 60–120 s)
-        </p>
+        <p>{a.sentenceOf(index + 1, VOICE_SCRIPT.length)}</p>
+        <p className="tabular-nums">{a.recordedSoFar(Math.round(totalSeconds))}</p>
       </div>
 
       <figure className="space-y-4 rounded-2xl border border-line bg-surface p-6">
@@ -286,35 +277,35 @@ export function VoiceRecorder() {
 
       <div className="flex flex-wrap items-center gap-4">
         <Button onClick={() => void toggleRecording()} variant={recording ? "danger" : "primary"} aria-pressed={recording}>
-          {recording ? "Stop" : clip ? "Record again" : "Record"}
+          {recording ? a.stop : clip ? a.recordAgain : a.record}
         </Button>
         <div aria-hidden className="h-2 w-40 overflow-hidden rounded-full bg-line">
-          <div ref={meterRef} className="h-full origin-left scale-x-0 bg-turquoise" />
+          <div ref={meterRef} className="h-full origin-left scale-x-0 bg-turquoise rtl:origin-right" />
         </div>
-        {recording && <span role="status">Recording… read the sentence, then press Stop.</span>}
+        {recording && <span role="status">{a.recordingNow}</span>}
       </div>
 
       {clip && !recording && (
         <div className="space-y-3">
           <audio controls src={clip.url} className="w-full max-w-md" />
-          {problem && <Notice tone={problem === "clipping" ? "info" : "error"}>{PROBLEM_TEXT[problem]}</Notice>}
+          {problem && <Notice tone={problem === "clipping" ? "info" : "error"}>{problemText(a, problem)}</Notice>}
         </div>
       )}
       {error && <Notice tone="error">{error}</Notice>}
 
       <div className="flex flex-wrap gap-3 border-t border-line pt-5">
         <Button variant="secondary" onClick={() => goTo(index - 1)} disabled={recording || index === 0}>
-          Previous
+          {a.previous}
         </Button>
         <Button onClick={() => goTo(index + 1)} disabled={recording || !usable(clip, problem)}>
-          {index === VOICE_SCRIPT.length - 1 ? "Review recordings" : "Next sentence"}
+          {index === VOICE_SCRIPT.length - 1 ? a.reviewRecordings : a.nextSentence}
         </Button>
         <Button variant="secondary" onClick={() => goTo(index + 1)} disabled={recording || usable(clip, problem)}>
-          Skip this one
+          {a.skipSentence}
         </Button>
         {enough && index < VOICE_SCRIPT.length - 1 && (
           <Button variant="secondary" onClick={() => setStage("review")} disabled={recording}>
-            I have enough, review
+            {a.haveEnough}
           </Button>
         )}
       </div>

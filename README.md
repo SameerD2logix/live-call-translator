@@ -1,8 +1,12 @@
 # Live Call Translator
 
 Speak Urdu on Zoom or Google Meet; your client hears English in your voice.
-This repository is at **Phase 4**: accuracy features on top of two-way call translation.
+This repository is at **Phase 5**: feature-complete, security-reviewed, fully bilingual, with kits for usability
+testing, deployment and the demo video.
 
+- **Phase 5:** security review against the OWASP Top 10:2025 with ten fixes (see `docs/security-review.md`), the whole
+  interface in Urdu and English, per-user API rate limits, security-event logs, secret rotation, a daily cleanup job,
+  and `docs/` guides for deployment, usability tests and the demo.
 - **Phase 4:** a personal glossary (words kept unchanged), sentence merging for Urdu's verb-final pauses, a noise
   gate and pause-length presets, Repeat and Fix (type a correction) buttons, and a check that voice-cloning samples
   really read the prompted sentences.
@@ -133,6 +137,9 @@ live-call-translator/
 │     ├─ lib/i18n/                  Phase 3: English/Urdu dictionary, language cookie
 │     ├─ app/api/glossary/ + lib/glossary/  Phase 4: words to keep (per user, max 50)
 │     ├─ lib/prefs.ts               Phase 4: pause preset and noise gate, remembered on this device
+│     ├─ lib/i18n/account.ts        Phase 5: Urdu/English text for sign-in, recording and settings
+│     ├─ lib/rate-limit.ts, lib/security-log.ts  Phase 5: per-user API limits, security events
+│     ├─ scripts/cleanup.mjs        Phase 5: daily removal of expired sessions, tokens, rate-limit rows
 │     ├─ app/setup/                 Phase 3: virtual-cable setup wizard
 │     ├─ components/{call,setup,i18n}/  subtitles, output picker, incoming controls, accuracy panel, wizard, language toggle
 │     ├─ db/migrations/             Our SQL (voice_profile, voice_consent, glossary_term); scripts/migrate.mjs runs everything
@@ -144,7 +151,12 @@ live-call-translator/
 │     ├─ components/{auth,onboarding,settings,ui}/
 │     └─ types/css.d.ts             Lets TypeScript accept global CSS imports
 ├─ docker-compose.yml               Local Postgres (bound to 127.0.0.1)
-├─ docs/call-app-testing.md         Phase 3: manual test matrix for Zoom, Meet, Teams, WhatsApp
+├─ docs/
+│  ├─ call-app-testing.md           Phase 3: manual test matrix for Zoom, Meet, Teams, WhatsApp
+│  ├─ security-review.md            Phase 5: OWASP Top 10:2025 review, fixes, launch checklist
+│  ├─ deploy.md                     Phase 5: Postgres, gateway, web app, cleanup, rotation, post-deploy checks
+│  ├─ usability-test-kit.md         Phase 5: tasks, think-aloud, SUS (English/Urdu), findings template
+│  └─ demo-script.md                Phase 5: 3-minute storyboard and recording checklist
 └─ .github/                         CI (lint, typecheck, smoke test, build, audit) and Dependabot
 ```
 
@@ -253,6 +265,13 @@ Tuning: lowering `VAD_SILENCE_SECS` cuts delay but splits sentences more often. 
 | Glossary ownership | Every query is scoped by `user_id`; delete only matches the owner's row; the gateway gets the list only inside the signed ticket and re-validates it |
 | Typed corrections | ≤ 500 characters, treated as speech data by the translator (never instructions); Fix/Repeat rate-limited per connection (burst 5, then one per 6 s) and only while you're live |
 | Voice samples | Must read the prompted sentences (blocks cloning a podcast or video); transcripts are compared in memory and never logged (only counts and a median score) |
+| **Phase 5** | Full review in `docs/security-review.md`. Highlights: |
+| Client IP | Gateway trusts exactly `TRUSTED_PROXY_HOPS` proxies, so `X-Forwarded-For` can't be spoofed to dodge rate limits |
+| API limits | Postgres fixed-window limits per user on our own routes (ticket, glossary, voice delete); fail closed |
+| Errors | Generic error replies from the gateway; unhandled rejections logged and the process restarted |
+| Secrets | Rotation without downtime via `TICKET_SECRET_PREVIOUS` / `INTERNAL_API_SECRET_PREVIOUS` |
+| Logging | Security events as JSON lines (origin rejected, rate limited, voice check failed, bad service token) for alerts |
+| Sessions | "Sign out on all other devices"; daily cleanup of expired sessions and tokens |
 
 ### Known gaps, tracked for later phases
 
@@ -275,12 +294,13 @@ Tuning: lowering `VAD_SILENCE_SECS` cuts delay but splits sentences more often. 
   settings (Scribe has an `enable_logging` option; zero-retention may need a higher plan) and disclose them in your privacy policy.
 - **No auto-reconnect** if the speech service drops mid-call; the user presses Start again.
 - **Stop discards the sentence in progress.** A later version should commit it and finish speaking before closing.
-- **Partly translated interface.** The call screen and the cable wizard are in Urdu and English; sign-in, voice
-  recording and settings pages are still English (they stay left-to-right when Urdu is chosen).
 - **Push-to-talk isn't built.** A web page only receives keys while focused, and during a call Zoom has focus;
   real push-to-talk needs a global hotkey (browser extension or desktop helper).
-- **Real calls haven't been tested yet.** Fill in `docs/call-app-testing.md`; menu names in the wizard's per-app
-  steps (especially WhatsApp Desktop) should be checked against current app versions and screenshots added.
+- **Real calls and real users haven't been tested yet.** Run `docs/call-app-testing.md` and
+  `docs/usability-test-kit.md`; check the wizard's per-app menu names (especially WhatsApp Desktop) against current
+  app versions and add screenshots.
+- **Open launch actions** (see the end of `docs/security-review.md`): pin GitHub Actions to SHAs, pin the Better Auth
+  CLI version, enable secret scanning, set up log alerts, and get an external penetration test or ZAP scan.
 - CSP allows inline styles (`style-src 'unsafe-inline'`), required by React style attributes; scripts remain nonce-only.
 - Pin GitHub Actions to commit SHAs.
 
@@ -330,8 +350,15 @@ Still to test live in Phase 0:
 - Urdu accuracy with English words mixed in, with and without `language_code=ur`.
 - The best `VAD_SILENCE_SECS` for long Urdu sentences (try 0.5–0.8).
 
-## Next: Phase 5
+## After Phase 5
 
-Polish, security review and demo: an OWASP Top 10 pass and a dependency/secret audit, translating the remaining
-pages (sign-in, recording, settings) into Urdu, usability tests with 3–5 real freelancers, filling in
-`docs/call-app-testing.md` on real calls, and recording the demo video.
+The build plan is complete. What remains needs people and real accounts:
+
+1. Deploy to staging (`docs/deploy.md`) and do the launch actions in `docs/security-review.md`.
+2. Run real calls (`docs/call-app-testing.md`) and tune `VAD_SILENCE_SECS`, `MERGE_INCOMPLETE_MS`, the noise gate and
+   the recording-check threshold from what you observe.
+3. Usability sessions with 3–5 freelancers (`docs/usability-test-kit.md`); fix severity 3–4 findings.
+4. Record the demo (`docs/demo-script.md`).
+
+Later: Redis for multi-instance gateways, a global push-to-talk hotkey (extension or desktop helper), RNNoise-class
+noise suppression, server-issued random recording prompts, and self-hosted Whisper/NLLB/XTTS behind the provider layer.

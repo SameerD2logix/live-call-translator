@@ -17,7 +17,9 @@ const EnvSchema = z
     HOST: z.string().default("0.0.0.0"),
     PORT: z.coerce.number().int().min(1).max(65_535).default(8787),
     LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace"]).default("info"),
-    TRUST_PROXY: bool.default(false),
+    // How many reverse proxies sit in front of the gateway (1 on Render/Railway/Fly). The client IP
+    // is taken from that hop, so a client can't fake it with its own X-Forwarded-For. 0 = no proxy.
+    TRUSTED_PROXY_HOPS: z.coerce.number().int().min(0).max(5).default(0),
 
     ALLOWED_ORIGINS: csv("http://localhost:3000"),
     TICKET_SECRET: z.string().min(32, "must be at least 32 characters"),
@@ -25,6 +27,9 @@ const EnvSchema = z
     TICKET_AUDIENCE: z.string().default("lct-gateway"),
     // Signs the web app's server-to-server calls (create/delete voice). Must differ from TICKET_SECRET.
     INTERNAL_API_SECRET: z.string().min(32, "must be at least 32 characters"),
+    // Secret rotation: during a change, put the old value here so tokens already issued keep working.
+    TICKET_SECRET_PREVIOUS: z.string().min(32).optional(),
+    INTERNAL_API_SECRET_PREVIOUS: z.string().min(32).optional(),
 
     STT_PROVIDER: z.enum(["elevenlabs", "mock"]).default("elevenlabs"),
     TRANSLATION_PROVIDER: z.enum(["anthropic", "mock"]).default("anthropic"),
@@ -91,7 +96,9 @@ const EnvSchema = z
     }
   });
 
-const parsed = EnvSchema.safeParse(process.env);
+// "NAME=" (empty) in a .env file means "not set", so optional settings fall back to their defaults.
+const definedEnv = Object.fromEntries(Object.entries(process.env).filter(([, value]) => value !== ""));
+const parsed = EnvSchema.safeParse(definedEnv);
 if (!parsed.success) {
   console.error("Invalid gateway configuration:");
   for (const issue of parsed.error.issues) {

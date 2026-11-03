@@ -5,14 +5,14 @@
  * scoped to one action. A delete token is also bound to one specific voice id, so a leaked
  * or replayed token can't be pointed at a different voice.
  */
-import { jwtVerify } from "jose";
 import { INTERNAL_TOKEN_AUDIENCE, ProviderVoiceId } from "@lct/protocol";
 import { env } from "../config/env";
+import { keysFrom, verifyWithKeys } from "./jwt";
 import { ReplayGuard } from "./replay-guard";
 
 export type InternalScope = "voice:clone" | "voice:delete";
 
-const secret = new TextEncoder().encode(env.INTERNAL_API_SECRET);
+const keys = keysFrom(env.INTERNAL_API_SECRET, env.INTERNAL_API_SECRET_PREVIOUS);
 const replay = new ReplayGuard();
 
 export interface InternalClaims {
@@ -26,8 +26,7 @@ export async function verifyInternalToken(
 ): Promise<InternalClaims> {
   if (!authorization?.startsWith("Bearer ")) throw new Error("missing bearer token");
 
-  const { payload } = await jwtVerify(authorization.slice("Bearer ".length), secret, {
-    algorithms: ["HS256"],
+  const payload = await verifyWithKeys(authorization.slice("Bearer ".length), keys, {
     issuer: env.TICKET_ISSUER,
     audience: INTERNAL_TOKEN_AUDIENCE,
     maxTokenAge: "60s",

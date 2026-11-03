@@ -6,6 +6,8 @@ import { useState, type FormEvent } from "react";
 import { Button, Field, Notice } from "@/components/ui/form";
 import { authClient } from "@/lib/auth-client";
 import { authErrorMessage } from "@/lib/auth-errors";
+import { accountText } from "@/lib/i18n/account";
+import type { Lang } from "@/lib/i18n/dictionary";
 
 type Step =
   | { kind: "idle" }
@@ -14,7 +16,8 @@ type Step =
   | { kind: "codes"; backupCodes: string[] };
 
 /** Turn two-step sign-in on or off, and manage backup codes. Every change needs the password. */
-export function TwoFactorSettings({ enabled }: { enabled: boolean }) {
+export function TwoFactorSettings({ enabled, lang }: { enabled: boolean; lang: Lang }) {
+  const a = accountText[lang];
   const router = useRouter();
   const [step, setStep] = useState<Step>({ kind: "idle" });
   const [pending, setPending] = useState(false);
@@ -61,44 +64,42 @@ export function TwoFactorSettings({ enabled }: { enabled: boolean }) {
   }
 
   function fail(err: { status?: number; code?: string } | null) {
-    setError(authErrorMessage(err, "That didn't work. Check your password and try again."));
+    setError(authErrorMessage(err, a.twoFaFailed, a));
     setPending(false);
   }
 
   return (
     <section aria-labelledby="twofa" className="space-y-4">
       <h2 id="twofa" className="text-xl font-bold">
-        Two-step sign-in
+        {a.twoFaTitle}
       </h2>
       <p className="text-muted">
-        {enabled
-          ? "On. Signing in asks for a code from your authenticator app."
-          : "Off. Add a code from an authenticator app (Google Authenticator, Microsoft Authenticator, 1Password…) to every sign-in."}
+        {enabled ? a.twoFaOn : a.twoFaOff}
       </p>
 
       {step.kind === "idle" &&
         (enabled ? (
           <div className="flex flex-wrap gap-3">
             <Button variant="secondary" onClick={() => setStep({ kind: "password", action: "codes" })}>
-              New backup codes
+              {a.newBackupCodes}
             </Button>
             <Button variant="danger" onClick={() => setStep({ kind: "password", action: "disable" })}>
-              Turn off
+              {a.turnOff}
             </Button>
           </div>
         ) : (
-          <Button onClick={() => setStep({ kind: "password", action: "enable" })}>Turn on two-step sign-in</Button>
+          <Button onClick={() => setStep({ kind: "password", action: "enable" })}>{a.turnOn2fa}</Button>
         ))}
 
       {step.kind === "password" && (
         <form onSubmit={onPassword} className="max-w-sm space-y-4">
-          <Field id="twofa-password" name="password" type="password" label="Your password" autoComplete="current-password" required autoFocus />
+          <Field id="twofa-password" name="password" type="password" label={a.yourPassword} autoComplete="current-password" dir="ltr" required autoFocus />
           <div className="flex gap-3">
             <Button type="submit" disabled={pending}>
-              Continue
+              {a.continue}
             </Button>
             <Button variant="secondary" onClick={() => setStep({ kind: "idle" })}>
-              Cancel
+              {a.cancel}
             </Button>
           </div>
         </form>
@@ -106,15 +107,18 @@ export function TwoFactorSettings({ enabled }: { enabled: boolean }) {
 
       {step.kind === "scan" && (
         <form onSubmit={onVerify} className="space-y-4">
-          <p>Scan this with your authenticator app, then enter the 6-digit code it shows.</p>
+          <p>{a.scanQr}</p>
           {/* A data: URL generated in the browser, so next/image adds nothing here. */}
-          <img src={step.qr} alt="QR code for your authenticator app" width={220} height={220} className="rounded-lg bg-white p-2" />
+          <img src={step.qr} alt={a.qrAlt} width={220} height={220} className="rounded-lg bg-white p-2" />
           <p className="text-sm text-muted">
-            Can&apos;t scan? Enter this key instead: <code className="break-all font-bold text-ink">{step.secret}</code>
+            {a.cantScan}{" "}
+            <code lang="en" dir="ltr" className="break-all font-bold text-ink">
+              {step.secret}
+            </code>
           </p>
-          <Field id="totp" name="code" label="6-digit code" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9 ]{6,7}" maxLength={7} required />
+          <Field id="totp" name="code" label={a.sixDigitCode} dir="ltr" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9 ]{6,7}" maxLength={7} required />
           <Button type="submit" disabled={pending}>
-            Turn on
+            {a.turnOn}
           </Button>
         </form>
       )}
@@ -122,17 +126,16 @@ export function TwoFactorSettings({ enabled }: { enabled: boolean }) {
       {step.kind === "codes" && (
         <div className="space-y-3">
           <Notice tone="success">
-            Save these backup codes somewhere safe (a password manager is ideal). Each one works once if you lose your phone.
-            They won&apos;t be shown again.
+            {a.saveBackupCodes}
           </Notice>
-          <ul className="grid max-w-sm grid-cols-2 gap-2 font-mono">
+          <ul lang="en" dir="ltr" className="grid max-w-sm grid-cols-2 gap-2 font-mono">
             {step.backupCodes.map((code) => (
               <li key={code} className="rounded border border-line bg-surface px-3 py-1.5 text-center">
                 {code}
               </li>
             ))}
           </ul>
-          <Button onClick={() => setStep({ kind: "idle" })}>I&apos;ve saved them</Button>
+          <Button onClick={() => setStep({ kind: "idle" })}>{a.savedThem}</Button>
         </div>
       )}
 

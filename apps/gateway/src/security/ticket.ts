@@ -9,12 +9,12 @@
  * looked up in its database. The browser can read this claim but can't change it without
  * breaking the signature, so a user can never speak with someone else's voice.
  */
-import { jwtVerify } from "jose";
 import { Glossary, ProviderVoiceId } from "@lct/protocol";
 import { env } from "../config/env";
+import { keysFrom, verifyWithKeys } from "./jwt";
 import { ReplayGuard } from "./replay-guard";
 
-const secret = new TextEncoder().encode(env.TICKET_SECRET);
+const keys = keysFrom(env.TICKET_SECRET, env.TICKET_SECRET_PREVIOUS);
 const replay = new ReplayGuard();
 
 export interface TicketClaims {
@@ -26,8 +26,8 @@ export interface TicketClaims {
 }
 
 export async function verifyTicket(token: string): Promise<TicketClaims> {
-  const { payload } = await jwtVerify(token, secret, {
-    algorithms: ["HS256"], // pin the algorithm; never let the token header choose it
+  const payload = await verifyWithKeys(token, keys, {
+    // HS256 is pinned inside verifyWithKeys; the token header never chooses the algorithm.
     issuer: env.TICKET_ISSUER,
     audience: env.TICKET_AUDIENCE,
     maxTokenAge: "120s",

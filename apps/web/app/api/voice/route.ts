@@ -12,6 +12,8 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { AUDIO_FILE_EXTENSION, VOICE_SAMPLE_LIMITS as L, sniffAudioContainer } from "@lct/protocol";
 import { getCurrentUser } from "@/lib/auth/session";
+import { allow } from "@/lib/rate-limit";
+import { securityEvent } from "@/lib/security-log";
 import { serverEnv } from "@/lib/env.server";
 import { CONSENT_VERSION, consentDocument } from "@/lib/voice/consent";
 import { VOICE_SCRIPT } from "@/lib/voice/script";
@@ -46,7 +48,9 @@ const Prompts = z
   .refine((list) => new Set(list).size === list.length, "each sentence once");
 
 function sameOrigin(request: Request): boolean {
-  return request.headers.get("origin") === serverEnv().APP_ORIGIN;
+  const ok = request.headers.get("origin") === serverEnv().APP_ORIGIN;
+  if (!ok) securityEvent("origin_rejected", { route: "voice" });
+  return ok;
 }
 
 export async function POST(request: Request) {
@@ -122,7 +126,8 @@ export async function POST(request: Request) {
     result = await cloneVoiceViaGateway(user.id, outgoing);
   } catch (err) {
     const status = err instanceof GatewayAdminError ? err.status : 0;
-    console.error("voice cloning via gateway failed, HTTP", status); // status only, never audio or user data
+    // Status only, never audio or user data.
+    securityEvent(status === 422 ? "voice_check_failed" : "gateway_error", { route: "voice", userId: user.id, status });
     if (status === 422) return fail(422, "script_mismatch"); // samples don't read our sentences
     const badAudio = status === 400 || status === 413 || status === 415;
     return badAudio ? fail(400, "invalid_audio") : fail(502, "provider_unavailable");
@@ -150,6 +155,7 @@ export async function DELETE(request: Request) {
   if (!sameOrigin(request)) return fail(403, "forbidden");
   const user = await getCurrentUser();
   if (!user) return fail(401, "unauthorized");
+  if (!(await allow(`voice-delete:${user.id}`, 10, 3600, "voice"))) return fail(429, "rate_limited");
   try {
     await deleteVoiceForUser(user.id);
   } catch {
