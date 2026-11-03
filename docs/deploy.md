@@ -4,6 +4,15 @@ Three pieces: **Postgres** (managed), the **web app** (Vercel or any Node host),
 service with WebSockets: Render, Railway or Fly; not serverless). Use one region close to Pakistan and your
 providers (e.g. a European region) to keep latency low.
 
+## 0. GitHub repository
+
+- Run `pnpm install` once and commit `pnpm-lock.yaml`: CI installs with `--frozen-lockfile` and fails without it.
+- Settings → **Code security**: turn on Dependabot alerts, **Secret scanning** and **Push protection**, and
+  **Private vulnerability reporting** (used by `SECURITY.md`).
+- Settings → **Rules** (or Branches): protect `main`; require the `ci` check to pass and a pull request to merge.
+- Pin the Actions in `.github/workflows/ci.yml` to full commit SHAs (Dependabot keeps them updated).
+- Choose a licence before making the repository public (without one, all rights are reserved).
+
 ## 1. Postgres
 
 Create a managed database (Neon, Supabase, Render or Railway). Require TLS (`?sslmode=require`, or `verify-full` where
