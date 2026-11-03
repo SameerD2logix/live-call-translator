@@ -8,6 +8,7 @@ import pino from "pino";
 import { INPUT_SAMPLE_RATE, ServerEvent, decodeAudioFrame, encodeAudioFrame, type Direction } from "@lct/protocol";
 import { TranslationPipeline } from "../src/pipeline/translation-pipeline";
 import { MockStt, MockTranslator, MockTts } from "../src/providers/mock";
+import type { SttProvider, SttStreamOptions } from "../src/providers/types";
 
 /** 100 ms of 16 kHz PCM16: a tone (speech stand-in) or silence. */
 function frame(amplitude: number): Buffer {
@@ -29,6 +30,8 @@ async function run(dir: Direction, withSpeech: boolean) {
     vadSilenceMs: 700,
     secondaryLanguages: [],
     glossary: [],
+    useKeyterms: false,
+    mergeIncompleteMs: 2500,
     log: pino({ level: "silent" }),
     emit: (event) => {
       if (!ServerEvent.safeParse(event).success) throw new Error(`Event doesn't match the protocol: ${event.type}`);
@@ -64,7 +67,81 @@ async function run(dir: Direction, withSpeech: boolean) {
   if (latency?.type === "latency") console.log("  stages:", JSON.stringify(latency.stages));
 }
 
+/**
+ * Phase 4: a sentence cut before its verb is joined with the rest; Fix speaks a typed
+ * replacement; Repeat speaks a sentence again. Driven by a scripted speech recognizer.
+ */
+async function runAccuracy() {
+  let handlers: SttStreamOptions["handlers"] | null = null;
+  let keyterms: string[] = [];
+  const scripted: SttProvider = {
+    id: "scripted-stt",
+    open(options) {
+      handlers = options.handlers;
+      keyterms = options.keyterms ?? [];
+      return { ready: Promise.resolve(), sendAudio() {}, commit() {}, close() {} };
+    },
+  };
+  const events: ServerEvent[] = [];
+  const pipeline = new TranslationPipeline({
+    direction: "out",
+    source: "ur",
+    target: "en",
+    providers: { stt: scripted, translation: new MockTranslator() },
+    speech: { tts: new MockTts(), voiceId: "mock-voice" },
+    vadSilenceMs: 700,
+    secondaryLanguages: [],
+    glossary: ["WordPress", "API"],
+    useKeyterms: true,
+    mergeIncompleteMs: 300,
+    log: pino({ level: "silent" }),
+    emit: (event) => {
+      if (!ServerEvent.safeParse(event).success) throw new Error(`Event doesn't match the protocol: ${event.type}`);
+      events.push(event);
+    },
+    emitAudio: () => undefined,
+    onFatal: (err) => {
+      throw err;
+    },
+  });
+  await pipeline.start();
+  const h = handlers as SttStreamOptions["handlers"] | null;
+  if (!h) throw new Error("scripted STT not opened");
+  if (keyterms.join() !== "WordPress,API") throw new Error("glossary wasn't sent as keyterms");
+
+  // The speaker pauses before the verb: two committed pieces, one sentence.
+  h.onPartial("میں یہ کام کل تک");
+  h.onCommitted("میں یہ کام کل تک");
+  h.onPartial("مکمل");
+  h.onCommitted("مکمل کر دوں گا");
+  await new Promise((resolve) => setTimeout(resolve, 1_200));
+  const finals = events.filter((e) => e.type === "transcript.final");
+  if (finals.length !== 1 || finals[0]?.type !== "transcript.final" || finals[0].text !== "میں یہ کام کل تک مکمل کر دوں گا") {
+    throw new Error(`sentence merge failed: ${JSON.stringify(finals)}`);
+  }
+  const heldShown = events.some((e) => e.type === "transcript.partial" && e.text.startsWith("میں یہ کام کل تک مکمل"));
+  if (!heldShown) throw new Error("the held fragment wasn't shown while waiting");
+
+  // Fix: typed English replaces sentence 1 and is spoken as typed.
+  pipeline.sayText("Sorry, I meant Friday, not tomorrow.", "en", 1);
+  // Repeat: sentence 1 again.
+  const repeated = pipeline.repeat(1);
+  await new Promise((resolve) => setTimeout(resolve, 2_000));
+  pipeline.stop();
+
+  const typed = events.find((e) => e.type === "transcript.final" && e.typed);
+  if (!typed || typed.type !== "transcript.final" || typed.replaces !== 1) throw new Error("Fix didn't create a typed replacement");
+  const typedTranslation = events.find((e) => e.type === "translation" && e.segmentId === typed.segmentId);
+  if (typedTranslation?.type !== "translation" || typedTranslation.text !== "Sorry, I meant Friday, not tomorrow.") {
+    throw new Error("typed English should be spoken exactly as typed");
+  }
+  const ttsForOne = events.filter((e) => e.type === "tts.start" && e.segmentId === 1).length;
+  if (!repeated || ttsForOne !== 2) throw new Error(`Repeat should speak sentence 1 twice (got ${ttsForOne})`);
+  console.log("✓ accuracy: glossary → keyterms, verb-final pieces merged, Fix (typed English), Repeat");
+}
+
 await run("out", true);
 await run("in", false);
 await run("in", true);
+await runAccuracy();
 console.log("✓ pipeline smoke test passed");

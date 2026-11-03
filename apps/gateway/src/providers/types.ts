@@ -63,6 +63,11 @@ export interface SttStream {
 }
 
 export interface SttProvider {
+  /**
+   * Optional: transcribe a short recorded file (used to check voice-cloning samples).
+   * Providers without it skip that check.
+   */
+  transcribeFile?(file: { data: Buffer; mimeType: string; filename: string }, language: LanguageCode, signal?: AbortSignal): Promise<string>;
   readonly id: string;
   open(options: SttStreamOptions): SttStream;
 }

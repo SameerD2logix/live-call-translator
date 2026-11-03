@@ -6,11 +6,12 @@
  * Transcripts live only in this tab's memory and are gone when the tab closes.
  */
 import { useCallback, useEffect, useReducer, useRef } from "react";
-import type { Direction, ServerEvent } from "@lct/protocol";
+import type { Direction, PausePreset, ServerEvent } from "@lct/protocol";
 import { NoSharedAudioError, startCallCapture, type CallSource } from "@/lib/audio/call-capture";
 import { loadOutputChoice, saveOutputChoice, type SavedOutput } from "@/lib/audio/devices";
 import { startMicCapture, type StreamCapture } from "@/lib/audio/mic-capture";
 import { PcmPlayer } from "@/lib/audio/pcm-player";
+import { DEFAULT_PREFS, loadPrefs, savePrefs } from "@/lib/prefs";
 import { GatewayClient, GatewayError, errorForCloseCode, type GatewayErrorCode } from "@/lib/realtime/gateway-client";
 
 export type SessionPhase = "idle" | "starting" | "live" | "error";
@@ -28,6 +29,10 @@ export interface Segment {
   translation: string | null;
   failed: "translation" | "tts" | null;
   delayMs: number | null;
+  /** Entered with Fix rather than spoken. */
+  typed: boolean;
+  /** A later Fix replaced this sentence. */
+  corrected: boolean;
 }
 
 interface State {
@@ -44,6 +49,8 @@ interface State {
   urduVoiceAvailable: boolean;
   monitor: boolean;
   output: SavedOutput | null;
+  pause: PausePreset;
+  noiseGate: boolean;
 }
 
 type Action =
@@ -54,7 +61,7 @@ type Action =
   | { type: "notice"; error: UiError | null }
   | { type: "ready"; urduVoiceAvailable: boolean }
   | { type: "partial"; dir: Direction; text: string }
-  | { type: "final"; dir: Direction; id: number; text: string }
+  | { type: "final"; dir: Direction; id: number; text: string; typed: boolean; replaces?: number }
   | { type: "translated"; dir: Direction; id: number; text: string }
   | { type: "segmentFailed"; dir: Direction; id: number; stage: "translation" | "tts" }
   | { type: "audible"; id: number; delayMs: number }
@@ -64,6 +71,7 @@ type Action =
   | { type: "speakUrdu"; value: boolean }
   | { type: "monitor"; value: boolean }
   | { type: "output"; value: SavedOutput | null }
+  | { type: "prefs"; pause: PausePreset; noiseGate: boolean }
   | { type: "clear" };
 
 const MAX_SEGMENTS = 300;
@@ -83,6 +91,8 @@ const initialState: State = {
   urduVoiceAvailable: false,
   monitor: false,
   output: null,
+  pause: DEFAULT_PREFS.pause,
+  noiseGate: DEFAULT_PREFS.noiseGate,
 };
 
 function patchSegment(state: State, dir: Direction, id: number, patch: Partial<Segment>): Segment[] {
@@ -116,11 +126,17 @@ function reducer(state: State, action: Action): State {
         translation: null,
         failed: null,
         delayMs: null,
+        typed: action.typed,
+        corrected: false,
       };
+      const segments = action.replaces
+        ? patchSegment(state, action.dir, action.replaces, { corrected: true })
+        : state.segments;
       return {
         ...state,
-        partial: { ...state.partial, [action.dir]: "" },
-        segments: [...state.segments, segment].slice(-MAX_SEGMENTS),
+        // A typed sentence doesn't end what you're currently saying.
+        partial: action.typed ? state.partial : { ...state.partial, [action.dir]: "" },
+        segments: [...segments, segment].slice(-MAX_SEGMENTS),
       };
     }
     case "translated":
@@ -141,6 +157,8 @@ function reducer(state: State, action: Action): State {
       return { ...state, monitor: action.value };
     case "output":
       return { ...state, output: action.value };
+    case "prefs":
+      return { ...state, pause: action.pause, noiseGate: action.noiseGate };
     case "clear":
       return { ...state, segments: [], partial: NO_PARTIAL, lastDelayMs: null };
   }
@@ -184,6 +202,8 @@ interface Runtime {
   speakUrdu: boolean;
   monitor: boolean;
   output: SavedOutput | null;
+  pause: PausePreset;
+  noiseGate: boolean;
   lastServerError: GatewayErrorCode | null;
   /** Bumped on every teardown so late callbacks from an old session are ignored. */
   generation: number;
@@ -204,6 +224,8 @@ export function useTranslatorSession() {
     speakUrdu: false,
     monitor: false,
     output: null,
+    pause: DEFAULT_PREFS.pause,
+    noiseGate: DEFAULT_PREFS.noiseGate,
     lastServerError: null,
     generation: 0,
   });
@@ -214,6 +236,10 @@ export function useTranslatorSession() {
     const saved = loadOutputChoice();
     runtime.current.output = saved;
     dispatch({ type: "output", value: saved });
+    const prefs = loadPrefs();
+    runtime.current.pause = prefs.pause;
+    runtime.current.noiseGate = prefs.noiseGate;
+    dispatch({ type: "prefs", ...prefs });
   }, []);
 
   const teardown = useCallback(() => {
@@ -239,6 +265,7 @@ export function useTranslatorSession() {
     const r = runtime.current;
     switch (event.type) {
       case "session.started":
+        if (event.vadSilenceMs !== undefined) r.vadSilenceMs = event.vadSilenceMs; // the pause preset actually used
         dispatch({ type: "live" });
         break;
       case "incoming.started":
@@ -248,8 +275,16 @@ export function useTranslatorSession() {
         dispatch({ type: "partial", dir: event.dir, text: event.text });
         break;
       case "transcript.final":
-        if (event.dir === "out") r.finalAt.set(event.segmentId, performance.now());
-        dispatch({ type: "final", dir: event.dir, id: event.segmentId, text: event.text });
+        // Typed sentences have no "you stopped talking" moment, so no delay is measured for them.
+        if (event.dir === "out" && !event.typed) r.finalAt.set(event.segmentId, performance.now());
+        dispatch({
+          type: "final",
+          dir: event.dir,
+          id: event.segmentId,
+          text: event.text,
+          typed: Boolean(event.typed),
+          replaces: event.replaces,
+        });
         break;
       case "translation":
         dispatch({ type: "translated", dir: event.dir, id: event.segmentId, text: event.text });
@@ -316,6 +351,7 @@ export function useTranslatorSession() {
       const mic = await startMicCapture({
         onFrame: (pcm) => runtime.current.client?.sendAudio("out", pcm),
         onLevel: (level) => levelListeners.current.forEach((listener) => listener(level)),
+        gate: r.noiseGate,
       });
       if (stale()) {
         void mic.stop();
@@ -347,7 +383,7 @@ export function useTranslatorSession() {
       if (stale()) return;
       r.vadSilenceMs = ready.vadSilenceMs;
       dispatch({ type: "ready", urduVoiceAvailable: ready.urduVoiceAvailable });
-      client.startSession();
+      client.startSession(r.pause);
     } catch (err) {
       if (stale()) return;
       teardown();
@@ -436,6 +472,28 @@ export function useTranslatorSession() {
     }
   }, []);
 
+  /** Pause length applies from the next Start; the noise gate switches immediately. */
+  const setPrefs = useCallback((prefs: { pause?: PausePreset; noiseGate?: boolean }) => {
+    const r = runtime.current;
+    if (prefs.pause) r.pause = prefs.pause;
+    if (prefs.noiseGate !== undefined) {
+      r.noiseGate = prefs.noiseGate;
+      r.mic?.setGate(prefs.noiseGate);
+    }
+    savePrefs({ pause: r.pause, noiseGate: r.noiseGate });
+    dispatch({ type: "prefs", pause: r.pause, noiseGate: r.noiseGate });
+  }, []);
+
+  /** Fix: speak a typed sentence instead (replacing a mistranslated one). */
+  const say = useCallback((text: string, lang: "ur" | "en", replaces?: number) => {
+    runtime.current.client?.send({ type: "segment.say", text, lang, ...(replaces ? { replaces } : {}) });
+  }, []);
+
+  /** Repeat: speak one of your sentences again. */
+  const repeat = useCallback((segmentId: number) => {
+    runtime.current.client?.send({ type: "segment.repeat", segmentId });
+  }, []);
+
   const toggleMute = useCallback(() => {
     const r = runtime.current;
     r.muted = !r.muted;
@@ -471,5 +529,8 @@ export function useTranslatorSession() {
     setSpeakUrdu,
     setMonitor,
     setOutput,
+    setPrefs,
+    say,
+    repeat,
   };
 }

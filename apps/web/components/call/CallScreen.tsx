@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, type ReactNode } from "react";
 import { LanguageToggle } from "@/components/i18n/LanguageToggle";
 import { useTranslatorSession, type UiError } from "@/hooks/use-translator-session";
+import { AccuracyPanel } from "./AccuracyPanel";
 import { dictionaries, type Dict, type Lang } from "@/lib/i18n/dictionary";
 import { IncomingControls } from "./IncomingControls";
 import { LatencyBadge } from "./LatencyBadge";
@@ -105,9 +106,19 @@ export function CallScreen({ lang, accountSlot }: { lang: Lang; accountSlot?: Re
             onSpeakUrduChange={s.setSpeakUrdu}
             t={t}
           />
+          <div className="md:col-span-2">
+            <AccuracyPanel pause={s.pause} noiseGate={s.noiseGate} live={live} onChange={s.setPrefs} t={t} />
+          </div>
         </div>
 
-        <TranscriptPanel segments={s.segments} partial={s.partial} t={t} />
+        <TranscriptPanel
+          segments={s.segments}
+          partial={s.partial}
+          t={t}
+          live={live}
+          onRepeat={s.repeat}
+          onSay={s.say}
+        />
       </main>
     </div>
   );

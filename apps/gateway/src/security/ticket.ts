@@ -10,7 +10,7 @@
  * breaking the signature, so a user can never speak with someone else's voice.
  */
 import { jwtVerify } from "jose";
-import { ProviderVoiceId } from "@lct/protocol";
+import { Glossary, ProviderVoiceId } from "@lct/protocol";
 import { env } from "../config/env";
 import { ReplayGuard } from "./replay-guard";
 
@@ -21,6 +21,8 @@ export interface TicketClaims {
   userId: string;
   /** null until the user has recorded their voice. */
   voiceId: string | null;
+  /** The user's words-to-keep, read from their account by the web app (Phase 4). */
+  glossary: string[];
 }
 
 export async function verifyTicket(token: string): Promise<TicketClaims> {
@@ -42,6 +44,9 @@ export async function verifyTicket(token: string): Promise<TicketClaims> {
     voiceId = parsed.data;
   }
 
+  const glossary = Glossary.safeParse(payload.glossary ?? []);
+  if (!glossary.success) throw new Error("ticket has an invalid glossary claim");
+
   if (!replay.claim(jti, exp * 1000)) throw new Error("ticket already used");
-  return { userId: sub, voiceId };
+  return { userId: sub, voiceId, glossary: glossary.data };
 }

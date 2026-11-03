@@ -39,6 +39,14 @@ const EnvSchema = z
     STT_SECONDARY_LANGUAGES: csv("en").pipe(z.array(z.enum(["ur", "en"]))),
     VAD_SILENCE_SECS: z.coerce.number().min(0.3).max(3).default(0.7),
 
+    // ---- Accuracy (Phase 4) ----
+    // Send the user's glossary to speech recognition as keyterms (ElevenLabs charges ~20% more for that audio).
+    STT_USE_KEYTERMS: bool.default(true),
+    // Hold a sentence that ends mid-clause (Urdu verb still to come) this long for its ending. 0 = off.
+    MERGE_INCOMPLETE_MS: z.coerce.number().int().min(0).max(5000).default(2500),
+    // Transcribe each voice-cloning sample and require it to match the sentence it was meant to read.
+    VOICE_SCRIPT_CHECK: bool.default(true),
+
     // ---- Incoming direction (Phase 3): the client's English → Urdu for you ----
     // English is SVO, so a shorter pause than Urdu usually works.
     INCOMING_VAD_SILENCE_SECS: z.coerce.number().min(0.3).max(3).default(0.6),

@@ -3,6 +3,8 @@ import { CABLE_PATTERN, isCable } from "./devices";
 
 export interface StreamCapture {
   setMuted(muted: boolean): void;
+  /** Noise gate: silence between words instead of room noise (see the worklet). */
+  setGate(enabled: boolean): void;
   stop(): Promise<void>;
 }
 
@@ -11,6 +13,8 @@ interface CaptureOptions {
   onFrame: (pcm16: ArrayBuffer) => void;
   /** Loudness 0..1 for the level meter. */
   onLevel?: (rms: number) => void;
+  /** Start with the noise gate on (default) or off. */
+  gate?: boolean;
 }
 
 type WorkletMessage = { type: "frame"; pcm: ArrayBuffer; rms: number } | { type: "error"; message: string };
@@ -19,7 +23,7 @@ type WorkletMessage = { type: "frame"; pcm: ArrayBuffer; rms: number } | { type:
  * Turns any audio MediaStream (microphone, shared tab, shared screen) into 16 kHz PCM frames.
  * The stream's tracks are stopped when the capture stops.
  */
-export async function startStreamCapture(stream: MediaStream, { onFrame, onLevel }: CaptureOptions): Promise<StreamCapture> {
+export async function startStreamCapture(stream: MediaStream, { onFrame, onLevel, gate = true }: CaptureOptions): Promise<StreamCapture> {
   const ctx = new AudioContext({ latencyHint: "interactive" });
   try {
     await ctx.audioWorklet.addModule("/worklets/pcm-capture-worklet.js");
@@ -28,7 +32,7 @@ export async function startStreamCapture(stream: MediaStream, { onFrame, onLevel
       numberOfInputs: 1,
       numberOfOutputs: 1,
       outputChannelCount: [1],
-      processorOptions: { targetSampleRate: INPUT_SAMPLE_RATE, frameMs: INPUT_FRAME_MS },
+      processorOptions: { targetSampleRate: INPUT_SAMPLE_RATE, frameMs: INPUT_FRAME_MS, gate },
     });
     // The worklet only runs if connected to the output; a zero gain keeps the audio out of the speakers.
     const silent = ctx.createGain();
@@ -51,6 +55,7 @@ export async function startStreamCapture(stream: MediaStream, { onFrame, onLevel
     let stopped = false;
     return {
       setMuted: (muted) => node.port.postMessage({ type: "mute", muted }),
+      setGate: (enabled) => node.port.postMessage({ type: "gate", enabled }),
       stop: async () => {
         if (stopped) return;
         stopped = true;

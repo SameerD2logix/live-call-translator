@@ -8,6 +8,7 @@ import {
   type ClientMessage,
   type Direction,
   type ErrorCode,
+  type PausePreset,
 } from "@lct/protocol";
 
 export type ReadyEvent = Extract<ServerEvent, { type: "ready" }>;
@@ -121,8 +122,8 @@ export class GatewayClient {
   }
 
   /** You → client: open the speech pipeline, then start forwarding mic audio. */
-  startSession(): void {
-    this.send({ type: "session.start", source: "ur", target: "en" });
+  startSession(pause: PausePreset): void {
+    this.send({ type: "session.start", source: "ur", target: "en", pause });
     this.streaming.out = true;
   }
 

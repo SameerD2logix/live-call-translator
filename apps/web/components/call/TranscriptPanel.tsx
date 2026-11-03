@@ -1,11 +1,19 @@
 "use client";
 
-import { memo, useEffect, useRef } from "react";
+import { memo, useEffect, useId, useRef, useState, type FormEvent } from "react";
+import { MAX_TYPED_CHARS } from "@lct/protocol";
 import type { Direction } from "@lct/protocol";
 import type { Segment } from "@/hooks/use-translator-session";
 import type { Dict } from "@/lib/i18n/dictionary";
 
-interface Props {
+interface Actions {
+  /** Repeat and Fix work only while you're live. */
+  live: boolean;
+  onRepeat: (segmentId: number) => void;
+  onSay: (text: string, lang: "ur" | "en", replaces: number) => void;
+}
+
+interface Props extends Actions {
   segments: Segment[];
   partial: Record<Direction, string>;
   t: Dict;
@@ -27,7 +35,7 @@ function textProps(lang: "ur" | "en") {
  * The whole conversation, in order. Each row pairs what was said with its translation, so a
  * mistranslation is easy to spot. Your lines and your client's lines are marked differently.
  */
-export const TranscriptPanel = memo(function TranscriptPanel({ segments, partial, t }: Props) {
+export const TranscriptPanel = memo(function TranscriptPanel({ segments, partial, t, live, onRepeat, onSay }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
 
@@ -60,7 +68,14 @@ export const TranscriptPanel = memo(function TranscriptPanel({ segments, partial
         ) : (
           <ol aria-live="polite" aria-relevant="additions">
             {segments.map((segment) => (
-              <Row key={`${segment.session}-${segment.dir}-${segment.id}`} segment={segment} t={t} />
+              <Row
+                key={`${segment.session}-${segment.dir}-${segment.id}`}
+                segment={segment}
+                t={t}
+                live={live}
+                onRepeat={onRepeat}
+                onSay={onSay}
+              />
             ))}
             {(["out", "in"] as const).map((dir) =>
               partial[dir] ? (
@@ -78,20 +93,33 @@ export const TranscriptPanel = memo(function TranscriptPanel({ segments, partial
   );
 });
 
-function Row({ segment, t }: { segment: Segment; t: Dict }) {
-  const { dir, original, translation, failed, delayMs } = segment;
+function Row({ segment, t, live, onRepeat, onSay }: { segment: Segment; t: Dict } & Actions) {
+  const { dir, original, translation, failed, delayMs, typed, corrected } = segment;
+  const [fixing, setFixing] = useState(false);
   const langs = LANGS[dir];
   const source = textProps(langs.original);
   const target = textProps(langs.translation);
+  const actionable = live && dir === "out" && !corrected;
+
   return (
-    <li className={`border-b border-s-4 border-b-line/70 last:border-b-0 md:grid md:grid-cols-2 ${dir === "in" ? "border-s-turquoise/60" : "border-s-cobalt/30"}`}>
+    <li
+      className={`border-b border-s-4 border-b-line/70 last:border-b-0 md:grid md:grid-cols-2 ${
+        dir === "in" ? "border-s-turquoise/60" : "border-s-cobalt/30"
+      } ${corrected ? "opacity-60" : ""}`}
+    >
       <div className="px-5 pt-3 md:pb-3">
-        <p className={`text-xs font-bold ${dir === "in" ? "text-turquoise" : "text-muted"}`}>{dir === "in" ? t.client : t.you}</p>
+        <p className={`flex flex-wrap gap-2 text-xs font-bold ${dir === "in" ? "text-turquoise" : "text-muted"}`}>
+          {dir === "in" ? t.client : t.you}
+          {typed && <span className="rounded bg-line/70 px-1.5 font-normal">{t.typedBadge}</span>}
+          {corrected && <span className="rounded bg-saffron/20 px-1.5 font-normal text-ink">{t.correctedBadge}</span>}
+        </p>
         <p {...source}>{original}</p>
       </div>
       <div className="px-5 pb-4 pt-1 md:border-s md:border-line md:pt-9">
         {translation ? (
-          <p {...target}>{translation}</p>
+          <p {...target} className={`${target.className} ${corrected ? "line-through" : ""}`}>
+            {translation}
+          </p>
         ) : failed === "translation" ? (
           <p className="text-danger">{dir === "out" ? t.failedYou : t.failedClient}</p>
         ) : (
@@ -99,7 +127,89 @@ function Row({ segment, t }: { segment: Segment; t: Dict }) {
         )}
         {failed === "tts" && dir === "out" && <p className="mt-1 text-sm text-danger">{t.failedTts}</p>}
         {delayMs !== null && <p className="mt-1 text-xs tabular-nums text-muted">{t.heardAfter((delayMs / 1000).toFixed(1))}</p>}
+
+        {actionable && !fixing && (
+          <div className="mt-2 flex gap-2">
+            {translation && (
+              <button
+                type="button"
+                onClick={() => onRepeat(segment.id)}
+                aria-label={t.repeatAria}
+                className="rounded-full border border-line px-3 py-1 text-sm"
+              >
+                {t.repeat}
+              </button>
+            )}
+            <button type="button" onClick={() => setFixing(true)} aria-label={t.fixAria} className="rounded-full border border-line px-3 py-1 text-sm">
+              {t.fix}
+            </button>
+          </div>
+        )}
+        {actionable && fixing && (
+          <FixForm
+            t={t}
+            onCancel={() => setFixing(false)}
+            onSubmit={(text, lang) => {
+              onSay(text, lang, segment.id);
+              setFixing(false);
+            }}
+          />
+        )}
       </div>
     </li>
+  );
+}
+
+/** Type the sentence you meant; English is spoken as typed, Urdu is translated first. */
+function FixForm({ t, onSubmit, onCancel }: { t: Dict; onSubmit: (text: string, lang: "ur" | "en") => void; onCancel: () => void }) {
+  const [text, setText] = useState("");
+  const [lang, setLang] = useState<"en" | "ur">("en");
+  const fieldId = useId();
+
+  const submit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (text.trim()) onSubmit(text.trim(), lang);
+  };
+
+  return (
+    <form onSubmit={submit} className="mt-3 space-y-2">
+      <label className="block text-sm font-bold" htmlFor={fieldId}>
+        {t.fixLabel}
+      </label>
+      <textarea
+        id={fieldId}
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        maxLength={MAX_TYPED_CHARS}
+        rows={2}
+        dir="auto"
+        lang={lang}
+        autoFocus
+        onKeyDown={(e) => {
+          if (e.key === "Escape") onCancel();
+        }}
+        className={`w-full rounded-xl border border-line bg-bg px-3 py-2 ${lang === "ur" ? "font-urdu text-lg leading-[2.2]" : ""}`}
+      />
+      <div className="flex flex-wrap items-center gap-2">
+        {(["en", "ur"] as const).map((value) => (
+          <button
+            key={value}
+            type="button"
+            aria-pressed={lang === value}
+            onClick={() => setLang(value)}
+            className={`rounded-full border px-3 py-1 text-sm ${lang === value ? "border-cobalt bg-cobalt text-cobalt-ink" : "border-line"}`}
+          >
+            {value === "en" ? t.fixLangEn : t.fixLangUr}
+          </button>
+        ))}
+        <button type="submit" disabled={!text.trim()} className="rounded-full bg-cobalt px-4 py-1 text-sm font-bold text-cobalt-ink disabled:opacity-50">
+          {t.fixSpeak}
+        </button>
+        <button type="button" onClick={onCancel} className="px-2 py-1 text-sm text-muted underline-offset-4 hover:underline">
+          {t.cancel}
+        </button>
+      </div>
+      <p className="text-xs text-muted">{t.fixHint}</p>
+    </form>
   );
 }

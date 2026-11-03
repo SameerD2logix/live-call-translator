@@ -50,5 +50,6 @@ export async function startCallCapture(
   // Clicking the browser's "Stop sharing" bar ends the tracks; tell the session.
   audio.addEventListener("ended", options.onEnded, { once: true });
   // Keep only the audio for processing; the video track stays alive (stopping it can end the share).
-  return startStreamCapture(stream, { onFrame: options.onFrame });
+  // No noise gate here: call apps already clean up the other side's audio.
+  return startStreamCapture(stream, { onFrame: options.onFrame, gate: false });
 }

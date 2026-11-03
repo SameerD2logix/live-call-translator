@@ -1,8 +1,11 @@
 # Live Call Translator
 
 Speak Urdu on Zoom or Google Meet; your client hears English in your voice.
-This repository is at **Phase 3**: call integration in both directions.
+This repository is at **Phase 4**: accuracy features on top of two-way call translation.
 
+- **Phase 4:** a personal glossary (words kept unchanged), sentence merging for Urdu's verb-final pauses, a noise
+  gate and pause-length presets, Repeat and Fix (type a correction) buttons, and a check that voice-cloning samples
+  really read the prompted sentences.
 - **Phase 3:** your English reaches Zoom/Meet/Teams through a virtual audio cable (guided setup with a loopback
   test); your client's English is translated into Urdu subtitles (and optionally an Urdu voice in your headphones);
   the call and setup screens work in Urdu or English.
@@ -57,6 +60,27 @@ don't change.
 - **Urdu voice.** Flash v2.5 has no Urdu, so the Urdu voice uses the Eleven v4 family through ElevenLabs' Text to
   Dialogue streaming endpoint with a **stock** voice. The client's voice is never cloned.
 
+### Phase 4: accuracy
+
+- **Glossary.** Stored per user in Postgres (max 50 terms, strict character set). The web app signs the list into
+  the call ticket, like the voice id, so the gateway uses only server-vouched terms. The translator keeps them
+  unchanged, and Scribe receives them as keyterms (`STT_USE_KEYTERMS`, ~20% extra transcription cost).
+- **Sentence merging** (`pipeline/sentence-assembler.ts`). If a committed piece ends with a word that can't end a
+  sentence (کے، کو، سے، تک، اور… in Urdu script or Roman Urdu; "and", "the"… in English), it's held and joined with
+  the next piece. The hold extends while the speaker keeps talking and is released after `MERGE_INCOMPLETE_MS` of
+  silence. The held text stays on screen as live text.
+- **Pause presets.** Short (0.5 s) / Normal (server default) / Long (1.1 s) pause ends a sentence; Long suits people
+  who pause before the verb. The gateway reports the pause it actually used so the delay badge stays accurate.
+- **Noise gate** (in the capture worklet). 20 ms windows are compared with an adaptive noise floor; room noise
+  becomes true silence, so Scribe neither hears words in noise nor waits longer to end a sentence. One window of
+  look-ahead and a 400 ms hold protect word starts and endings. Adds ~40 ms; can be turned off.
+- **Repeat / Fix.** Repeat re-speaks one of your recent sentences (kept in memory for this call only). Fix speaks a
+  typed sentence instead: English is spoken exactly as typed, Urdu is translated first; the old line is marked
+  "Corrected below".
+- **Recording check.** Each voice sample is transcribed with Scribe v2 (batch) and compared with the sentence it was
+  meant to read (normalised edit-distance similarity ≥ 0.6, at least 80% of samples). Expected sentences come from
+  the web app's own script, never from the browser.
+
 ### Phase 2: accounts and voices
 
 ```
@@ -92,6 +116,8 @@ live-call-translator/
 │  │     └─ ws/realtime-route.ts    One WebSocket = one call session; all per-connection checks
 │  │     ├─ http/voice-routes.ts    Phase 2: internal create/delete voice API (service-token protected)
 │  │     ├─ pipeline/translation-pipeline.ts  Phase 3: one class for both directions (out: ur→en, in: en→ur)
+│  │     ├─ pipeline/sentence-assembler.ts    Phase 4: joins sentences cut before the verb
+│  │     ├─ lib/text-similarity.ts            Phase 4: transcript vs. prompted sentence (recording check)
 │  │  └─ test/pipeline.smoke.ts     Runs the real pipeline on mock providers; validates every event
 │  └─ web/                          Next.js app
 │     ├─ proxy.ts                   Per-request nonce CSP (middleware.ts on Next 15)
@@ -105,9 +131,11 @@ live-call-translator/
 │     ├─ lib/audio/sample-recorder.ts  MediaRecorder takes with level/clipping checks
 │     ├─ lib/audio/{devices,call-capture,cable-test}.ts  Phase 3: cable detection, call-audio capture, loopback test
 │     ├─ lib/i18n/                  Phase 3: English/Urdu dictionary, language cookie
+│     ├─ app/api/glossary/ + lib/glossary/  Phase 4: words to keep (per user, max 50)
+│     ├─ lib/prefs.ts               Phase 4: pause preset and noise gate, remembered on this device
 │     ├─ app/setup/                 Phase 3: virtual-cable setup wizard
-│     ├─ components/{call,setup,i18n}/  subtitles, output picker, incoming controls, wizard, language toggle
-│     ├─ db/migrations/             Our SQL (voice_profile, voice_consent); scripts/migrate.mjs runs everything
+│     ├─ components/{call,setup,i18n}/  subtitles, output picker, incoming controls, accuracy panel, wizard, language toggle
+│     ├─ db/migrations/             Our SQL (voice_profile, voice_consent, glossary_term); scripts/migrate.mjs runs everything
 │     ├─ lib/audio/                 mic-capture.ts, pcm-player.ts
 │     ├─ lib/realtime/              gateway-client.ts
 │     ├─ public/worklets/           pcm-capture-worklet.js (resamples mic to 16 kHz PCM16)
@@ -154,6 +182,9 @@ Run `pnpm dev` and open http://localhost:3000:
 4. In Settings, turn on two-step sign-in, sign out, sign back in with a code, then try deleting your voice.
 5. Open /setup and follow the cable wizard (install VB-CABLE or BlackHole first), then on the call screen press
    Start and "Share the call tab" on any tab playing speech: mock subtitles appear.
+
+6. Phase 4: in the Accuracy panel add "WordPress", pick the Long pause, then press Start. While live, press Repeat
+   or Fix on one of your lines.
 
 **Testing with a real call:** follow `docs/call-app-testing.md`.
 
@@ -217,12 +248,21 @@ Tuning: lowering `VAD_SILENCE_SECS` cuts delay but splits sentences more often. 
 | Audio channels | Every binary frame must carry a valid channel byte; per-direction rate limits; frames for a direction that isn't running are dropped |
 | Loopback safety | Real-mic selection skips virtual cables; `restrictOwnAudio` on system-audio capture; your English never plays on speakers unless you turn on the monitor |
 | Device data | Only the chosen output's per-site device id and label, in localStorage on that computer |
+| **Phase 4** | |
+| Glossary input | Zod schema with a strict character set (also keeps terms harmless inside the translator's instructions), ≤ 40 characters, ≤ 50 terms; unique per user (case-insensitive index); the limit is enforced in the same SQL statement as the insert |
+| Glossary ownership | Every query is scoped by `user_id`; delete only matches the owner's row; the gateway gets the list only inside the signed ticket and re-validates it |
+| Typed corrections | ≤ 500 characters, treated as speech data by the translator (never instructions); Fix/Repeat rate-limited per connection (burst 5, then one per 6 s) and only while you're live |
+| Voice samples | Must read the prompted sentences (blocks cloning a podcast or video); transcripts are compared in memory and never logged (only counts and a median score) |
 
 ### Known gaps, tracked for later phases
 
-- **Liveness check for voice uploads.** Nothing yet proves the recordings are the account owner reading our sentences;
-  someone could upload another person's speech. Next hardening step: transcribe each sample and require it to match
-  the prompted sentence (random order per session), and keep ElevenLabs' own safeguards in place.
+- **The recording check proves the sentences were read, not who read them.** Someone could still get another person
+  to read our script. Next steps: server-issued random prompts per attempt, and a speaker-similarity check between
+  recordings and later call audio.
+- **Sentence merging uses word lists.** It catches the common "paused before the verb" case but not every
+  incomplete clause; an LLM-based end-of-sentence check could follow if real calls show the need.
+- **Noise suppression** is the browser's built-in suppressor plus our gate. An RNNoise-class model (WASM) would help
+  in very noisy rooms; it needs `'wasm-unsafe-eval'` in the CSP.
 - **Sign-up reveals existing emails to direct API callers.** The UI hides it, but Better Auth's endpoint answers
   differently for registered emails; rate limits slow probing. Revisit when Better Auth offers an enumeration-safe mode.
 - **Consent records are deleted with the account** (right to erasure). If you need longer proof of consent for legal
@@ -280,6 +320,9 @@ Verified in the Scribe v2 Realtime API reference and event reference:
   Dialogue**, not the plain TTS endpoint: use `TTS_PROVIDER=elevenlabs-dialogue` to try it for your English, and
   it's the default for the incoming Urdu voice. Clones made before v4 must be retrained for it.
 
+Verified for Phase 4: batch transcription is `POST /v1/speech-to-text` with `model_id=scribe_v2`, `file` and an
+optional `language_code`; WebM and Ogg are accepted.
+
 Still to test live in Phase 0:
 
 - How list parameters are encoded (the code sends repeated keys: `secondary_languages=en`). If the Scribe handshake
@@ -287,8 +330,8 @@ Still to test live in Phase 0:
 - Urdu accuracy with English words mixed in, with and without `language_code=ur`.
 - The best `VAD_SILENCE_SECS` for long Urdu sentences (try 0.5–0.8).
 
-## Next: Phase 4
+## Next: Phase 5
 
-Accuracy: a per-user glossary (terms kept unchanged; also sent to Scribe as keyterms), stronger noise suppression and
-VAD tuning, a correction button to retype or repeat a mistranslated sentence, smarter handling of Urdu's verb-final
-sentences, and the recording liveness check (each sample must match its prompted sentence).
+Polish, security review and demo: an OWASP Top 10 pass and a dependency/secret audit, translating the remaining
+pages (sign-in, recording, settings) into Urdu, usability tests with 3–5 real freelancers, filling in
+`docs/call-app-testing.md` on real calls, and recording the demo video.

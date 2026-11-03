@@ -28,6 +28,8 @@ const UPLOAD_ERRORS: Record<string, string> = {
   invalid_audio: "The voice service couldn't use these recordings. Try recording somewhere quieter.",
   provider_unavailable: "The voice service isn't responding. Your recordings are still here, so try again in a minute.",
   unauthorized: "Your sign-in expired. Sign in again, then record again.",
+  script_mismatch:
+    "Some recordings don't match their sentences. Listen back, re-record the ones that sound off, and read each sentence as shown.",
 };
 
 const usable = (clip: Clip | null, problem: ClipProblem | null): clip is Clip =>
@@ -59,7 +61,9 @@ export function VoiceRecorder() {
     [],
   );
 
-  const good = clips.filter((clip, i) => usable(clip, problems[i] ?? null));
+  // Usable takes with the script sentence each one reads (the server checks they match).
+  const takes = clips.flatMap((clip, i) => (usable(clip, problems[i] ?? null) ? [{ clip, prompt: i }] : []));
+  const good = takes.map((take) => take.clip);
   const totalSeconds = good.reduce((sum, clip) => sum + Math.min(clip.seconds, L.maxSampleSeconds), 0);
   const enough = good.length >= L.minSamples && totalSeconds >= L.minTotalSeconds;
   const line = VOICE_SCRIPT[index]!;
@@ -120,6 +124,7 @@ export function VoiceRecorder() {
     form.append("readingLanguage", lang);
     form.append("removeBackgroundNoise", String(noisyRoom));
     form.append("durations", JSON.stringify(good.map((c) => Math.round(Math.min(c.seconds, L.maxSampleSeconds) * 10) / 10)));
+    form.append("prompts", JSON.stringify(takes.map((take) => take.prompt)));
     good.forEach((clip, i) => form.append("samples", clip.blob, `sample-${i + 1}`));
 
     const res = await fetch("/api/voice", { method: "POST", body: form }).catch(() => null);

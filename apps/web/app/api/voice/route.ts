@@ -14,6 +14,7 @@ import { AUDIO_FILE_EXTENSION, VOICE_SAMPLE_LIMITS as L, sniffAudioContainer } f
 import { getCurrentUser } from "@/lib/auth/session";
 import { serverEnv } from "@/lib/env.server";
 import { CONSENT_VERSION, consentDocument } from "@/lib/voice/consent";
+import { VOICE_SCRIPT } from "@/lib/voice/script";
 import { cloneVoiceViaGateway, deleteVoiceViaGateway, GatewayAdminError } from "@/lib/voice/gateway-admin";
 import { countRecentConsents, getVoiceProfile, recordConsent, saveVoiceProfile } from "@/lib/voice/repository";
 import { deleteVoiceForUser } from "@/lib/voice/service";
@@ -33,9 +34,16 @@ const Fields = z.object({
   readingLanguage: z.enum(["en", "ur"]),
   removeBackgroundNoise: z.enum(["true", "false"]),
   durations: z.string().max(1_000),
+  /** Which script sentence each sample reads, in sample order. */
+  prompts: z.string().max(1_000),
 });
 
 const Durations = z.array(z.number().min(1).max(L.maxSampleSeconds)).min(L.minSamples).max(L.maxSamples);
+const Prompts = z
+  .array(z.number().int().min(0).max(VOICE_SCRIPT.length - 1))
+  .min(L.minSamples)
+  .max(L.maxSamples)
+  .refine((list) => new Set(list).size === list.length, "each sentence once");
 
 function sameOrigin(request: Request): boolean {
   return request.headers.get("origin") === serverEnv().APP_ORIGIN;
@@ -66,13 +74,17 @@ export async function POST(request: Request) {
   if (!fields.success) return fail(400, "consent_required_or_invalid_fields");
 
   let durations: number[];
+  let prompts: number[];
   try {
-    const parsed = Durations.safeParse(JSON.parse(fields.data.durations));
-    if (!parsed.success) return fail(400, "invalid_durations");
-    durations = parsed.data;
+    const parsedDurations = Durations.safeParse(JSON.parse(fields.data.durations));
+    const parsedPrompts = Prompts.safeParse(JSON.parse(fields.data.prompts));
+    if (!parsedDurations.success || !parsedPrompts.success) return fail(400, "invalid_durations");
+    durations = parsedDurations.data;
+    prompts = parsedPrompts.data;
   } catch {
     return fail(400, "invalid_durations");
   }
+  if (prompts.length !== durations.length) return fail(400, "invalid_samples");
 
   const files = form.getAll("samples");
   if (files.length !== durations.length || files.some((f) => !(f instanceof File))) return fail(400, "invalid_samples");
@@ -97,6 +109,9 @@ export async function POST(request: Request) {
   }
   if (totalBytes > L.maxTotalBytes) return fail(413, "too_large");
   outgoing.append("removeBackgroundNoise", fields.data.removeBackgroundNoise);
+  // The sentences the samples should contain, from OUR script (never text sent by the browser).
+  outgoing.append("language", fields.data.readingLanguage);
+  for (const index of prompts) outgoing.append("expected", VOICE_SCRIPT[index]![fields.data.readingLanguage]);
 
   // Consent is stored at the moment it's given, with a hash of the exact wording shown.
   const digest = createHash("sha256").update(consentDocument()).digest("hex");
@@ -108,6 +123,7 @@ export async function POST(request: Request) {
   } catch (err) {
     const status = err instanceof GatewayAdminError ? err.status : 0;
     console.error("voice cloning via gateway failed, HTTP", status); // status only, never audio or user data
+    if (status === 422) return fail(422, "script_mismatch"); // samples don't read our sentences
     const badAudio = status === 400 || status === 413 || status === 415;
     return badAudio ? fail(400, "invalid_audio") : fail(502, "provider_unavailable");
   }

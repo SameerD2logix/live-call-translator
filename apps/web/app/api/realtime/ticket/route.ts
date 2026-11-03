@@ -6,6 +6,7 @@
  * Phase 2: requires a real, verified session, and puts the user's OWN voice id (looked up
  * in our database) into the signed ticket. The browser can't alter it, so nobody can call
  * with another person's voice.
+ * Phase 4: the user's glossary travels the same way, read from the database by user id.
  */
 import { randomUUID } from "node:crypto";
 import { SignJWT } from "jose";
@@ -13,6 +14,7 @@ import { NextResponse } from "next/server";
 import type { TicketResponse } from "@lct/protocol";
 import { getCurrentUser } from "@/lib/auth/session";
 import { serverEnv } from "@/lib/env.server";
+import { listGlossary } from "@/lib/glossary/repository";
 import { getVoiceProfile } from "@/lib/voice/repository";
 
 export const runtime = "nodejs";
@@ -39,7 +41,8 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "voice_required" }, { status: 409, headers: NO_STORE });
   }
 
-  const ticket = await new SignJWT({ voice: voice.providerVoiceId })
+  const glossary = (await listGlossary(user.id)).map((entry) => entry.term);
+  const ticket = await new SignJWT({ voice: voice.providerVoiceId, glossary })
     .setProtectedHeader({ alg: "HS256", typ: "JWT" })
     .setSubject(user.id)
     .setIssuer(env.TICKET_ISSUER)

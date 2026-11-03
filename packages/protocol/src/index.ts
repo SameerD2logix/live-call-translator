@@ -51,8 +51,8 @@ export const TTS_SAMPLE_RATE = 24_000;
 // ---- Size limits (enforced by the gateway, mirrored here so both sides agree) ---
 /** Largest accepted mic frame: 500 ms. Normal frames are 100 ms (3 200 bytes). */
 export const MAX_AUDIO_FRAME_BYTES = INPUT_BYTES_PER_MS * 500;
-/** Largest accepted JSON control message. */
-export const MAX_CONTROL_MESSAGE_BYTES = 4 * 1024;
+/** Largest accepted JSON control message (the auth message carries a ticket with the user's glossary). */
+export const MAX_CONTROL_MESSAGE_BYTES = 16 * 1024;
 /** Hard cap the WebSocket library enforces on any single frame (it closes with 1009 above this). */
 export const MAX_WS_MESSAGE_BYTES = 64 * 1024;
 /** Transcript text per sentence is truncated to this many characters. */
@@ -83,6 +83,31 @@ export const ErrorCode = z.enum([
 ]);
 export type ErrorCode = z.infer<typeof ErrorCode>;
 
+// ---- Accuracy (Phase 4) ---------------------------------------------------------
+/** Words a user wants kept exactly as they are (product names, tech terms). */
+export const GLOSSARY_LIMITS = { maxTerms: 50, maxTermChars: 40 } as const;
+
+/**
+ * One glossary term: letters, digits, spaces and a few symbols seen in tech names
+ * (C++, Node.js, A/B, O'Reilly). Anything else is rejected, which also keeps the terms
+ * harmless when they are placed in the translator's instructions.
+ */
+export const GlossaryTerm = z
+  .string()
+  .trim()
+  .min(1)
+  .max(GLOSSARY_LIMITS.maxTermChars)
+  .regex(/^[\p{L}\p{N}][\p{L}\p{N}\p{M} .+#&/'’_-]*$/u, "letters, digits, spaces and . + # & / ' _ - only");
+
+export const Glossary = z.array(GlossaryTerm).max(GLOSSARY_LIMITS.maxTerms);
+
+/** How long a pause ends your sentence. Longer suits Urdu speakers who pause before the verb. */
+export const PausePreset = z.enum(["short", "normal", "long"]);
+export type PausePreset = z.infer<typeof PausePreset>;
+
+/** Longest sentence you can type with the Fix button. */
+export const MAX_TYPED_CHARS = 500;
+
 // ---- Browser → gateway --------------------------------------------------------
 // strictObject: unknown fields are rejected, so clients can't smuggle extra data in.
 export const ClientMessage = z.discriminatedUnion("type", [
@@ -90,14 +115,28 @@ export const ClientMessage = z.discriminatedUnion("type", [
   z.strictObject({
     type: z.literal("auth"),
     protocol: z.literal(PROTOCOL_VERSION),
-    ticket: z.string().min(20).max(4_096),
+    ticket: z.string().min(20).max(12_000),
   }),
   /** Phase 1 supports one direction: Urdu speech → English speech. */
-  z.strictObject({ type: z.literal("session.start"), source: z.literal("ur"), target: z.literal("en") }),
+  z.strictObject({
+    type: z.literal("session.start"),
+    source: z.literal("ur"),
+    target: z.literal("en"),
+    pause: PausePreset.optional(),
+  }),
   z.strictObject({ type: z.literal("session.stop") }),
   /** Start translating the call's audio (sent as channel 2) into Urdu. Requires an active connection. */
   z.strictObject({ type: z.literal("incoming.start"), speakUrdu: z.boolean() }),
   z.strictObject({ type: z.literal("incoming.stop") }),
+  /** Fix: speak a typed sentence instead (Urdu is translated first; English is spoken as is). */
+  z.strictObject({
+    type: z.literal("segment.say"),
+    text: z.string().trim().min(1).max(MAX_TYPED_CHARS),
+    lang: z.enum(["ur", "en"]),
+    replaces: z.number().int().positive().optional(),
+  }),
+  /** Repeat: speak one of your recent sentences again (e.g. the client didn't catch it). */
+  z.strictObject({ type: z.literal("segment.repeat"), segmentId: z.number().int().positive() }),
   /** Browser-measured delay until the translated audio became audible. Numbers only. */
   z.strictObject({
     type: z.literal("client.metrics"),
@@ -123,14 +162,22 @@ export const ServerEvent = z.discriminatedUnion("type", [
     /** Whether the gateway can speak the client's words to you in Urdu (a voice is configured). */
     urduVoiceAvailable: z.boolean(),
   }),
-  z.object({ type: z.literal("session.started") }),
+  /** `vadSilenceMs`: the pause length actually used for your sentences (after the pause preset). */
+  z.object({ type: z.literal("session.started"), vadSilenceMs: z.number().int().nonnegative().optional() }),
   z.object({ type: z.literal("incoming.started"), speakUrdu: z.boolean() }),
   z.object({ type: z.literal("incoming.stopped") }),
   // Segment events carry `dir`; segment ids are counted separately per direction.
   /** Interim source-language text for the sentence being spoken. Replaces the previous partial. */
   z.object({ type: z.literal("transcript.partial"), dir: Direction, text: transcript }),
-  /** Final source-language text for one sentence. */
-  z.object({ type: z.literal("transcript.final"), dir: Direction, segmentId, text: transcript }),
+  /** Final source-language text for one sentence. `typed`: entered with Fix; `replaces`: the sentence it corrects. */
+  z.object({
+    type: z.literal("transcript.final"),
+    dir: Direction,
+    segmentId,
+    text: transcript,
+    typed: z.boolean().optional(),
+    replaces: segmentId.optional(),
+  }),
   z.object({ type: z.literal("translation"), dir: Direction, segmentId, text: translation }),
   /** One sentence failed; the session continues. */
   z.object({

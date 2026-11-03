@@ -12,6 +12,8 @@
  *  5. Audio frames: channel byte, size and alignment checked; each direction rate-limited to 1.5x real time.
  *  6. One live connection per user, a maximum session length, and a daily minutes quota (both directions count).
  *  7. Speech in the call uses only the voice id from the signed ticket (the user's own clone).
+ *  8. The glossary also comes only from the signed ticket; typed corrections are length-capped
+ *     and rate-limited.
  */
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
@@ -27,6 +29,7 @@ import {
   encodeAudioFrame,
   type Direction,
   type ErrorCode,
+  type PausePreset,
   type ServerEvent,
 } from "@lct/protocol";
 import { env } from "../config/env";
@@ -44,6 +47,16 @@ const AUDIO_RATE_BYTES_PER_SEC = INPUT_BYTES_PER_MS * 1000 * 1.5;
 const AUDIO_BURST_BYTES = INPUT_BYTES_PER_MS * 1000 * 2;
 const MAX_RATE_VIOLATIONS = 20;
 const QUOTA_MESSAGE = "You've used today's translation minutes. They reset at 00:00 UTC (5:00 AM in Pakistan).";
+/** Fix and Repeat: at most 5 in a burst, then one every 6 s. */
+const CORRECTIONS_PER_SEC = 1 / 6;
+const CORRECTION_BURST = 5;
+
+/** Pause that ends your sentence, per preset (seconds). "normal" is the server default. */
+function pauseSeconds(preset: PausePreset | undefined): number {
+  if (preset === "short") return Math.min(0.5, env.VAD_SILENCE_SECS);
+  if (preset === "long") return Math.max(1.1, env.VAD_SILENCE_SECS);
+  return env.VAD_SILENCE_SECS;
+}
 
 export function registerRealtimeRoute(app: FastifyInstance, providers: Providers): void {
   app.get(
@@ -70,6 +83,9 @@ class RealtimeConnection {
   private userId: string | null = null;
   /** The user's own voice, from the signed ticket. Never accepted from a client message. */
   private voiceId: string | null = null;
+  /** Words to keep unchanged, from the signed ticket. */
+  private glossary: string[] = [];
+  private readonly corrections = new TokenBucket(CORRECTIONS_PER_SEC, CORRECTION_BURST);
   private authInFlight = false;
   private readonly pipelines: Record<Direction, TranslationPipeline | null> = { out: null, in: null };
   private readonly buckets: Record<Direction, TokenBucket> = {
@@ -150,7 +166,7 @@ class RealtimeConnection {
       case "auth":
         return this.fail("bad_request", "Already authenticated.", CloseCode.badRequest);
       case "session.start":
-        return this.startOutgoing();
+        return this.startOutgoing(message.pause);
       case "session.stop":
         this.stopPipeline("out");
         this.stopPipeline("in");
@@ -163,6 +179,18 @@ class RealtimeConnection {
         this.stopPipeline("in");
         this.send({ type: "incoming.stopped" });
         return;
+      case "segment.say":
+      case "segment.repeat": {
+        const out = this.pipelines.out;
+        if (!out) return; // only while you're live
+        if (!this.corrections.take(1)) {
+          this.log.info("correction rate limit hit");
+          return;
+        }
+        if (message.type === "segment.say") out.sayText(message.text, message.lang, message.replaces);
+        else out.repeat(message.segmentId);
+        return;
+      }
       case "client.metrics":
         // Numbers only: the browser-measured delay until translated audio was audible.
         this.log.info({ segmentId: message.segmentId, playbackDelayMs: Math.round(message.playbackDelayMs) }, "client playback delay");
@@ -174,8 +202,9 @@ class RealtimeConnection {
     this.authInFlight = true;
     let userId: string;
     let voiceId: string | null;
+    let glossary: string[];
     try {
-      ({ userId, voiceId } = await verifyTicket(ticket));
+      ({ userId, voiceId, glossary } = await verifyTicket(ticket));
     } catch {
       // Don't log the ticket or the exact reason; both help attackers more than us.
       return this.fail("unauthorized", "Your session ticket is invalid or expired. Press Start again.", CloseCode.unauthorized);
@@ -189,6 +218,7 @@ class RealtimeConnection {
     }
     this.userId = userId;
     this.voiceId = voiceId;
+    this.glossary = glossary;
     clearTimeout(this.authTimer);
     this.log = this.log.child({ user: userId });
     this.send({
@@ -202,21 +232,22 @@ class RealtimeConnection {
 
   // ---- Directions ----------------------------------------------------------
   /** You speak Urdu → the client hears English in your own voice. */
-  private async startOutgoing(): Promise<void> {
+  private async startOutgoing(pause: PausePreset | undefined): Promise<void> {
     if (this.pipelines.out) return;
     // The voice comes from the signed ticket, which the web app filled from its database.
     const voiceId = this.voiceId;
     if (!voiceId) {
       return this.fail("voice_required", "Record your voice before your first call.", CloseCode.voiceRequired);
     }
+    const vadSilenceMs = Math.round(pauseSeconds(pause) * 1000);
     const started = await this.startPipeline("out", {
       source: "ur",
       target: "en",
       speech: { tts: this.providers.tts, voiceId },
-      vadSilenceMs: Math.round(env.VAD_SILENCE_SECS * 1000),
+      vadSilenceMs,
       secondaryLanguages: env.STT_SECONDARY_LANGUAGES,
     });
-    if (started) this.send({ type: "session.started" });
+    if (started) this.send({ type: "session.started", vadSilenceMs });
   }
 
   /** The client speaks English → you get Urdu subtitles, and Urdu speech if asked for. */
@@ -250,7 +281,9 @@ class RealtimeConnection {
       direction: dir,
       ...o,
       providers: this.providers,
-      glossary: [], // Phase 4: load the user's glossary here (after an ownership check)
+      glossary: this.glossary,
+      useKeyterms: env.STT_USE_KEYTERMS && this.glossary.length > 0,
+      mergeIncompleteMs: env.MERGE_INCOMPLETE_MS,
       log: this.log,
       emit: (event) => this.send(event),
       emitAudio: (pcm) => this.sendAudio(dir, pcm),

@@ -17,6 +17,9 @@ import {
 } from "../types";
 
 const ENDPOINT = "wss://api.elevenlabs.io/v1/speech-to-text/realtime";
+const BATCH_ENDPOINT = "https://api.elevenlabs.io/v1/speech-to-text";
+const BATCH_MODEL = "scribe_v2";
+const BATCH_TIMEOUT_MS = 30_000;
 const CONNECT_TIMEOUT_MS = 10_000;
 /** While the session is starting we buffer at most this much audio, dropping the oldest. */
 const MAX_PENDING_MS = 3_000;
@@ -36,6 +39,36 @@ export class ElevenLabsScribeStt implements SttProvider {
   readonly id = "elevenlabs-scribe";
 
   constructor(private readonly cfg: ScribeConfig) {}
+
+  /** Batch transcription of a short file (POST /v1/speech-to-text, Scribe v2). */
+  async transcribeFile(
+    file: { data: Buffer; mimeType: string; filename: string },
+    language: string,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    const form = new FormData();
+    form.append("model_id", BATCH_MODEL);
+    form.append("language_code", language);
+    form.append("file", new Blob([new Uint8Array(file.data)], { type: file.mimeType }), file.filename);
+    const timeout = AbortSignal.timeout(BATCH_TIMEOUT_MS);
+    let res: Response;
+    try {
+      res = await fetch(BATCH_ENDPOINT, {
+        method: "POST",
+        headers: { "xi-api-key": this.cfg.apiKey },
+        body: form,
+        signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+      });
+    } catch {
+      throw new ProviderError(this.id, "unavailable", "Couldn't reach speech-to-text.");
+    }
+    if (!res.ok) {
+      await res.body?.cancel().catch(() => undefined);
+      throw new ProviderError(this.id, errorCodeForStatus(res.status), `Transcription failed (HTTP ${res.status}).`);
+    }
+    const body = (await res.json()) as { text?: unknown };
+    return typeof body.text === "string" ? body.text : "";
+  }
 
   open(options: SttStreamOptions): SttStream {
     const { handlers, sampleRate } = options;
