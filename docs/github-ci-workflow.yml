@@ -1,0 +1,34 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least privilege for the workflow token.
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      # TODO: pin these actions to full commit SHAs once versions are settled.
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      # Secret scan of every tracked file. Reviewed false positives live in .secrets.baseline;
+      # anything new fails the build. (Works for private repos too, unlike GitHub's free scanning.)
+      # pipx is preinstalled on GitHub's Ubuntu runners (system pip is locked by PEP 668).
+      - run: git ls-files -z | xargs -0 pipx run --spec detect-secrets==1.5.0 detect-secrets-hook --baseline .secrets.baseline
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm --filter @lct/gateway smoke
+      - run: pnpm --filter @lct/gateway build
+      # Fail on known high/critical vulnerabilities in dependencies.
+      - run: pnpm audit --audit-level high
