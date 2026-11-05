@@ -35,6 +35,8 @@ const ServerEnv = z
     if (!env.APP_ORIGIN.startsWith("https://")) issue("APP_ORIGIN", "must use https:// in production");
     if (!env.GATEWAY_PUBLIC_URL.startsWith("wss://")) issue("GATEWAY_PUBLIC_URL", "must use wss:// in production");
     if (!env.GATEWAY_INTERNAL_URL.startsWith("https://")) issue("GATEWAY_INTERNAL_URL", "must use https:// in production");
+    // Staging only (no email provider yet): emails are written to the server log instead.
+    if (process.env.STAGING_MODE === "true") return;
     if (!env.RESEND_API_KEY) issue("RESEND_API_KEY", "is required in production (verification and reset emails)");
     if (!env.EMAIL_FROM) issue("EMAIL_FROM", "is required in production");
   });

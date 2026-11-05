@@ -68,6 +68,10 @@ const EnvSchema = z
     // Counts audio in BOTH directions: a 60-minute call with subtitles on uses up to 120 minutes.
     DAILY_MINUTES_QUOTA: z.coerce.number().int().positive().default(240),
     MAX_SESSION_MINUTES: z.coerce.number().int().positive().default(60),
+
+    // Staging only: lets a production build run with mock providers until real provider keys exist.
+    // Never set this on a live deployment that real users rely on.
+    STAGING_MODE: bool.default(false),
   })
   .superRefine((env, ctx) => {
     const requireIf = (key: keyof typeof env, condition: boolean) => {
@@ -87,7 +91,7 @@ const EnvSchema = z
 
     if (env.NODE_ENV === "production") {
       const providers = [env.STT_PROVIDER, env.TRANSLATION_PROVIDER, env.TTS_PROVIDER, env.VOICE_CLONE_PROVIDER, env.INCOMING_TTS_PROVIDER];
-      if (providers.includes("mock")) {
+      if (providers.includes("mock") && !env.STAGING_MODE) {
         ctx.addIssue({ code: "custom", path: ["STT_PROVIDER"], message: "mock providers are not allowed in production" });
       }
       if (env.ALLOWED_ORIGINS.some((origin) => !origin.startsWith("https://"))) {

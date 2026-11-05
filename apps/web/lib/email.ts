@@ -23,7 +23,7 @@ export async function sendEmail(email: Email): Promise<void> {
     if (!res.ok) throw new Error(`Email provider returned HTTP ${res.status}`);
     return;
   }
-  if (process.env.NODE_ENV !== "production") {
+  if (process.env.NODE_ENV !== "production" || process.env.STAGING_MODE === "true") {
     // DEVELOPMENT ONLY: links are single-use and short-lived, and this never runs in production.
     // eslint-disable-next-line no-console
     console.info(`\n[dev email] To: ${email.to}\nSubject: ${email.subject}\n\n${email.text}\n`);
