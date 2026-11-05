@@ -32,7 +32,8 @@ export function TwoFactorSettings({ enabled, lang }: { enabled: boolean; lang: L
 
     if (step.action === "enable") {
       const { data, error } = await authClient.twoFactor.enable({ password });
-      if (error || !data) return fail(error);
+      // Newer Better Auth versions return a union; only the TOTP variant carries the QR data.
+      if (error || !data || !("totpURI" in data)) return fail(error);
       const qr = await QRCode.toDataURL(data.totpURI, { margin: 1, width: 220 });
       const secret = new URL(data.totpURI).searchParams.get("secret") ?? "";
       setStep({ kind: "scan", qr, secret, backupCodes: data.backupCodes });
