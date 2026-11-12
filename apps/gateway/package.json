@@ -20,7 +20,7 @@
     "@lct/protocol": "workspace:*",
     "fastify": "^5.0.0",
     "jose": "^6.0.0",
-    "pino": "^9.0.0",
+    "pino": "^10.4.0",
     "ws": "^8.18.0",
     "zod": "^4.1.0"
   },
